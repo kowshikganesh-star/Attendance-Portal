@@ -1,0 +1,78 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  EMPLOYEE
+}
+
+enum LeaveType {
+  SL
+  CL
+  LOP
+  HD_LOP
+  PL
+}
+
+enum LeaveStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model User {
+  id             Int            @id @default(autoincrement())
+  name           String
+  email          String         @unique
+  password       String
+  role           Role           @default(EMPLOYEE)
+  isActive       Boolean        @default(true)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  attendances    Attendance[]
+  leaveRequests  LeaveRequest[]
+  reviewedLeaves LeaveRequest[] @relation("ReviewedLeaves")
+
+  @@map("users")
+}
+
+model Attendance {
+  id        Int       @id @default(autoincrement())
+  userId    Int
+  clockIn   DateTime
+  clockOut  DateTime?
+  date      DateTime  @default(dbgenerated("CURRENT_DATE")) @db.Date
+  latitude  Float?
+  longitude Float?
+  location  String?
+  user      User      @relation(fields: [userId], references: [id])
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@map("attendance")
+}
+
+model LeaveRequest {
+  id          Int         @id @default(autoincrement())
+  userId      Int
+  type        LeaveType
+  fromDate    DateTime
+  toDate      DateTime
+  reason      String
+  status      LeaveStatus @default(PENDING)
+  adminRemark String?
+  reviewedBy  Int?
+  reviewedAt  DateTime?
+  user        User        @relation(fields: [userId], references: [id])
+  reviewer    User?       @relation("ReviewedLeaves", fields: [reviewedBy], references: [id])
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@map("leave_requests")
+}
