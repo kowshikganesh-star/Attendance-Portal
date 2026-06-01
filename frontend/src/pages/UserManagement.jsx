@@ -74,7 +74,7 @@ const UserManagement = () => {
       const params = {};
       if (search)               params.search = search;
       if (roleFilter !== 'ALL') params.role   = roleFilter;
-      const { data } = await axios.get(`${API}/api/users`, { params });
+      const { data } = await axios.get(`${API}/users`, { params });
       setUsers(data.users);
     } catch {
       toast.error('Failed to load users.');
