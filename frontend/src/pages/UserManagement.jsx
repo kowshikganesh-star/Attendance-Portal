@@ -9,7 +9,7 @@ import {
   Edit2, Trash2, KeyRound, UserCheck, UserX, X, Eye, EyeOff,
 } from 'lucide-react';
 
-const API = import.meta.env.VITE_API_URL;
+const API = import.meta.env.VITE_API_URL/api;
 
 const RoleBadge = ({ role }) => {
   const styles = {
