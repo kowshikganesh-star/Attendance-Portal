@@ -18,7 +18,7 @@ const AdminDashboard = () => {
 
   const fetchActive = async () => {
     try {
-      const { data } = await axios.get(`${API}/attendance/active`);
+      const { data } = await axios.get(`${API}/api/attendance/active`);
       setActive(data.active);
     } catch {
       setActive([]);
