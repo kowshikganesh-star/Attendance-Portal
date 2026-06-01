@@ -3,7 +3,7 @@ import { createContext, useContext, useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 
 const AuthContext = createContext(null);
-const API = 'https://attendance-portal-ic4z.onrender.com/api';
+const API = 'https://attendance-portal-ic4z.onrender.com';
 
 // ── Geolocation helper ────────────────────────────────────
 const getLocation = () =>
