@@ -6,7 +6,7 @@ import { useNavigate } from 'react-router-dom';
 import { ShieldCheck, LogOut, Users, Clock, History, FileText, BarChart2 } from 'lucide-react';
 import LocationMap from '../components/LocationMap';
 
-const API = import.meta.env.VITE_API_URL;
+const API = 'https://attendance-portal-ic4z.onrender.com/api';
 
 const AdminDashboard = () => {
   const { user, logout } = useAuth();
