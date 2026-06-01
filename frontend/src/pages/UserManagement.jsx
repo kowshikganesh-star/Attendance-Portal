@@ -9,7 +9,7 @@ import {
   Edit2, Trash2, KeyRound, UserCheck, UserX, X, Eye, EyeOff,
 } from 'lucide-react';
 
-const API = import.meta.env.VITE_API_URL || 'https://attendance-portal-ic4z.onrender.com/api';
+const API = 'https://attendance-portal-ic4z.onrender.com/api';
 
 const RoleBadge = ({ role }) => {
   const styles = {
