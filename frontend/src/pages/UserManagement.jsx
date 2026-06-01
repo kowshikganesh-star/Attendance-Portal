@@ -9,7 +9,7 @@ import {
   Edit2, Trash2, KeyRound, UserCheck, UserX, X, Eye, EyeOff,
 } from 'lucide-react';
 
-const API = import.meta.env.VITE_API_URL/api;
+const API = import.meta.env.VITE_API_URL;
 
 const RoleBadge = ({ role }) => {
   const styles = {
@@ -74,7 +74,7 @@ const UserManagement = () => {
       const params = {};
       if (search)               params.search = search;
       if (roleFilter !== 'ALL') params.role   = roleFilter;
-      const { data } = await axios.get(`${API}/users`, { params });
+      const { data } = await axios.get(`${API}/api/users`, { params });
       setUsers(data.users);
     } catch {
       toast.error('Failed to load users.');
