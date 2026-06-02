@@ -9,7 +9,7 @@ import {
   Coffee, History, BarChart2, FileText,
 } from 'lucide-react';
 
-const API = import.meta.env.VITE_API_URL;
+const API = import.meta.env.VITE_API_URL || 'https://attendance-portal-ic4z.onrender.com/api';
 
 const EmployeeDashboard = () => {
   const { user, logout } = useAuth();
@@ -58,23 +58,6 @@ const EmployeeDashboard = () => {
     document.addEventListener('visibilitychange', handleVisible);
     return () => document.removeEventListener('visibilitychange', handleVisible);
   }, [fetchStatus]);
-
-  // ── beforeunload — instant clock-out on tab close ─────────
-  useEffect(() => {
-    if (!status?.isClockedIn) return;
-
-    const handleBeforeUnload = () => {
-      const token = sessionStorage.getItem('token');
-      if (!token) return;
-      navigator.sendBeacon(
-        `${API}/auth/logout`,
-        new Blob([JSON.stringify({ token })], { type: 'application/json' })
-      );
-    };
-
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [status?.isClockedIn]);
 
   // ── Handle logout ─────────────────────────────────────────
   const handleLogout = async () => {
