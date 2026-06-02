@@ -3,9 +3,8 @@ import { createContext, useContext, useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 
 const AuthContext = createContext(null);
-const API = import.meta.env.VITE_API_URL;
+const API = import.meta.env.VITE_API_URL || 'https://attendance-portal-ic4z.onrender.com/api';
 
-// ── Geolocation helper ────────────────────────────────────
 const getLocation = () =>
   new Promise((resolve) => {
     if (!navigator.geolocation) { resolve(null); return; }
@@ -34,10 +33,9 @@ export const AuthProvider = ({ children }) => {
   const [user,    setUser]    = useState(null);
   const [token,   setToken]   = useState(() => sessionStorage.getItem('token'));
   const [loading, setLoading] = useState(true);
-  const heartbeatRef          = useRef(null);
-  const hiddenTimeoutRef      = useRef(null); // ← new ref for delay
+  const heartbeatRef     = useRef(null);
+  const hiddenTimeoutRef = useRef(null); // ← KEY FIX
 
-  // ── Restore session on load ───────────────────────────────
   useEffect(() => {
     if (!token) {
       setUser(null);
@@ -45,9 +43,7 @@ export const AuthProvider = ({ children }) => {
       delete axios.defaults.headers.common['Authorization'];
       return;
     }
-
     axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-
     axios.get(`${API}/auth/me`)
       .then(({ data }) => setUser(data.user))
       .catch(() => {
@@ -57,10 +53,8 @@ export const AuthProvider = ({ children }) => {
         delete axios.defaults.headers.common['Authorization'];
       })
       .finally(() => setLoading(false));
-
   }, [token]);
 
-  // ── Heartbeat every 4 mins on ALL pages ───────────────────
   useEffect(() => {
     if (!user || user.role !== 'EMPLOYEE' || !token) {
       if (heartbeatRef.current) {
@@ -69,18 +63,11 @@ export const AuthProvider = ({ children }) => {
       }
       return;
     }
-
     const sendHeartbeat = async () => {
-      try {
-        await axios.post(`${API}/attendance/heartbeat`);
-      } catch {
-        // Silent fail
-      }
+      try { await axios.post(`${API}/attendance/heartbeat`); } catch {}
     };
-
     sendHeartbeat();
     heartbeatRef.current = setInterval(sendHeartbeat, 4 * 60 * 1000);
-
     return () => {
       if (heartbeatRef.current) {
         clearInterval(heartbeatRef.current);
@@ -89,15 +76,17 @@ export const AuthProvider = ({ children }) => {
     };
   }, [user, token]);
 
-  // ── Page Visibility — screen sleep/wake handler ───────────
   useEffect(() => {
     if (!user || user.role !== 'EMPLOYEE' || !token) return;
+
+    const sendHeartbeat = async () => {
+      try { await axios.post(`${API}/attendance/heartbeat`); } catch {}
+    };
 
     const handleVisibilityChange = async () => {
       if (document.visibilityState === 'hidden') {
 
-        // ── Wait 5 seconds before stopping heartbeat ──
-        // This prevents refresh from triggering clock-out
+        // ── Wait 5 seconds — refresh cancels this before 5s ──
         hiddenTimeoutRef.current = setTimeout(() => {
           if (heartbeatRef.current) {
             clearInterval(heartbeatRef.current);
@@ -107,7 +96,7 @@ export const AuthProvider = ({ children }) => {
 
       } else if (document.visibilityState === 'visible') {
 
-        // ── Cancel hidden timeout if page came back quickly (refresh) ──
+        // ── Cancel timeout — page came back (refresh) ──
         if (hiddenTimeoutRef.current) {
           clearTimeout(hiddenTimeoutRef.current);
           hiddenTimeoutRef.current = null;
@@ -115,8 +104,6 @@ export const AuthProvider = ({ children }) => {
 
         try {
           const { data } = await axios.get(`${API}/attendance/today`);
-
-          // ── Only clock in if genuinely not clocked in ──
           if (!data.isClockedIn) {
             const locationData = await getLocation();
             await axios.post(`${API}/attendance/clock-in`, {
@@ -127,50 +114,33 @@ export const AuthProvider = ({ children }) => {
               }),
             });
           }
-
-          // ── Restart heartbeat if not running ──
           if (!heartbeatRef.current) {
-            const sendHeartbeat = async () => {
-              try {
-                await axios.post(`${API}/attendance/heartbeat`);
-              } catch {
-                // Silent fail
-              }
-            };
             sendHeartbeat();
             heartbeatRef.current = setInterval(sendHeartbeat, 4 * 60 * 1000);
           }
-        } catch {
-          // Silent fail
-        }
+        } catch {}
       }
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
-      // cleanup timeout on unmount
       if (hiddenTimeoutRef.current) {
         clearTimeout(hiddenTimeoutRef.current);
       }
     };
-
   }, [user, token]);
 
-  // ── Login with location ───────────────────────────────────
   const login = async (email, password, locationData = null) => {
     const payload = {
-      email,
-      password,
+      email, password,
       ...(locationData && {
         latitude:  locationData.latitude,
         longitude: locationData.longitude,
         location:  locationData.location,
       }),
     };
-
     const { data } = await axios.post(`${API}/auth/login`, payload);
-
     sessionStorage.setItem('token', data.token);
     axios.defaults.headers.common['Authorization'] = `Bearer ${data.token}`;
     setToken(data.token);
@@ -178,7 +148,6 @@ export const AuthProvider = ({ children }) => {
     return data.user;
   };
 
-  // ── Logout with auto clock-out ────────────────────────────
   const logout = async () => {
     if (heartbeatRef.current) {
       clearInterval(heartbeatRef.current);
@@ -188,11 +157,7 @@ export const AuthProvider = ({ children }) => {
       clearTimeout(hiddenTimeoutRef.current);
       hiddenTimeoutRef.current = null;
     }
-    try {
-      await axios.post(`${API}/auth/logout`);
-    } catch {
-      // Continue logout even if API fails
-    }
+    try { await axios.post(`${API}/auth/logout`); } catch {}
     sessionStorage.removeItem('token');
     setToken(null);
     setUser(null);
@@ -206,7 +171,6 @@ export const AuthProvider = ({ children }) => {
   );
 };
 
-// eslint-disable-next-line react-refresh/only-export-components
 export const useAuth = () => {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error('useAuth must be used inside AuthProvider');
