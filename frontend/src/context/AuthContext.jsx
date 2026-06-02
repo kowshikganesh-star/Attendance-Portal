@@ -35,6 +35,7 @@ export const AuthProvider = ({ children }) => {
   const [token,   setToken]   = useState(() => sessionStorage.getItem('token'));
   const [loading, setLoading] = useState(true);
   const heartbeatRef          = useRef(null);
+  const hiddenTimeoutRef      = useRef(null); // ← new ref for delay
 
   // ── Restore session on load ───────────────────────────────
   useEffect(() => {
@@ -94,14 +95,28 @@ export const AuthProvider = ({ children }) => {
 
     const handleVisibilityChange = async () => {
       if (document.visibilityState === 'hidden') {
-        if (heartbeatRef.current) {
-          clearInterval(heartbeatRef.current);
-          heartbeatRef.current = null;
-        }
+
+        // ── Wait 5 seconds before stopping heartbeat ──
+        // This prevents refresh from triggering clock-out
+        hiddenTimeoutRef.current = setTimeout(() => {
+          if (heartbeatRef.current) {
+            clearInterval(heartbeatRef.current);
+            heartbeatRef.current = null;
+          }
+        }, 5000);
+
       } else if (document.visibilityState === 'visible') {
+
+        // ── Cancel hidden timeout if page came back quickly (refresh) ──
+        if (hiddenTimeoutRef.current) {
+          clearTimeout(hiddenTimeoutRef.current);
+          hiddenTimeoutRef.current = null;
+        }
+
         try {
           const { data } = await axios.get(`${API}/attendance/today`);
 
+          // ── Only clock in if genuinely not clocked in ──
           if (!data.isClockedIn) {
             const locationData = await getLocation();
             await axios.post(`${API}/attendance/clock-in`, {
@@ -113,6 +128,7 @@ export const AuthProvider = ({ children }) => {
             });
           }
 
+          // ── Restart heartbeat if not running ──
           if (!heartbeatRef.current) {
             const sendHeartbeat = async () => {
               try {
@@ -131,7 +147,13 @@ export const AuthProvider = ({ children }) => {
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      // cleanup timeout on unmount
+      if (hiddenTimeoutRef.current) {
+        clearTimeout(hiddenTimeoutRef.current);
+      }
+    };
 
   }, [user, token]);
 
@@ -161,6 +183,10 @@ export const AuthProvider = ({ children }) => {
     if (heartbeatRef.current) {
       clearInterval(heartbeatRef.current);
       heartbeatRef.current = null;
+    }
+    if (hiddenTimeoutRef.current) {
+      clearTimeout(hiddenTimeoutRef.current);
+      hiddenTimeoutRef.current = null;
     }
     try {
       await axios.post(`${API}/auth/logout`);
