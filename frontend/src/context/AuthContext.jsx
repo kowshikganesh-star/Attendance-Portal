@@ -3,7 +3,7 @@ import { createContext, useContext, useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 
 const AuthContext = createContext(null);
-const API = import.meta.env.VITE_API_URL || 'https://attendance-portal-ic4z.onrender.com/api';
+const API = import.meta.env.VITE_API_URL;
 
 const getLocation = () =>
   new Promise((resolve) => {
@@ -33,9 +33,9 @@ export const AuthProvider = ({ children }) => {
   const [user,    setUser]    = useState(null);
   const [token,   setToken]   = useState(() => sessionStorage.getItem('token'));
   const [loading, setLoading] = useState(true);
-  const heartbeatRef     = useRef(null);
-  const hiddenTimeoutRef = useRef(null); // ← KEY FIX
+  const heartbeatRef          = useRef(null);
 
+  // ── Restore session on load ───────────────────────────────
   useEffect(() => {
     if (!token) {
       setUser(null);
@@ -55,6 +55,7 @@ export const AuthProvider = ({ children }) => {
       .finally(() => setLoading(false));
   }, [token]);
 
+  // ── Heartbeat every 4 mins ────────────────────────────────
   useEffect(() => {
     if (!user || user.role !== 'EMPLOYEE' || !token) {
       if (heartbeatRef.current) {
@@ -63,11 +64,16 @@ export const AuthProvider = ({ children }) => {
       }
       return;
     }
+
     const sendHeartbeat = async () => {
-      try { await axios.post(`${API}/attendance/heartbeat`); } catch {}
+      try {
+        await axios.post(`${API}/attendance/heartbeat`);
+      } catch {}
     };
+
     sendHeartbeat();
     heartbeatRef.current = setInterval(sendHeartbeat, 4 * 60 * 1000);
+
     return () => {
       if (heartbeatRef.current) {
         clearInterval(heartbeatRef.current);
@@ -76,64 +82,11 @@ export const AuthProvider = ({ children }) => {
     };
   }, [user, token]);
 
-  useEffect(() => {
-    if (!user || user.role !== 'EMPLOYEE' || !token) return;
-
-    const sendHeartbeat = async () => {
-      try { await axios.post(`${API}/attendance/heartbeat`); } catch {}
-    };
-
-    const handleVisibilityChange = async () => {
-      if (document.visibilityState === 'hidden') {
-
-        // ── Wait 5 seconds — refresh cancels this before 5s ──
-        hiddenTimeoutRef.current = setTimeout(() => {
-          if (heartbeatRef.current) {
-            clearInterval(heartbeatRef.current);
-            heartbeatRef.current = null;
-          }
-        }, 5000);
-
-      } else if (document.visibilityState === 'visible') {
-
-        // ── Cancel timeout — page came back (refresh) ──
-        if (hiddenTimeoutRef.current) {
-          clearTimeout(hiddenTimeoutRef.current);
-          hiddenTimeoutRef.current = null;
-        }
-
-        try {
-          const { data } = await axios.get(`${API}/attendance/today`);
-          if (!data.isClockedIn) {
-            const locationData = await getLocation();
-            await axios.post(`${API}/attendance/clock-in`, {
-              ...(locationData && {
-                latitude:  locationData.latitude,
-                longitude: locationData.longitude,
-                location:  locationData.location,
-              }),
-            });
-          }
-          if (!heartbeatRef.current) {
-            sendHeartbeat();
-            heartbeatRef.current = setInterval(sendHeartbeat, 4 * 60 * 1000);
-          }
-        } catch {}
-      }
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      if (hiddenTimeoutRef.current) {
-        clearTimeout(hiddenTimeoutRef.current);
-      }
-    };
-  }, [user, token]);
-
+  // ── Login with location ───────────────────────────────────
   const login = async (email, password, locationData = null) => {
     const payload = {
-      email, password,
+      email,
+      password,
       ...(locationData && {
         latitude:  locationData.latitude,
         longitude: locationData.longitude,
@@ -148,16 +101,15 @@ export const AuthProvider = ({ children }) => {
     return data.user;
   };
 
+  // ── Logout with auto clock-out ────────────────────────────
   const logout = async () => {
     if (heartbeatRef.current) {
       clearInterval(heartbeatRef.current);
       heartbeatRef.current = null;
     }
-    if (hiddenTimeoutRef.current) {
-      clearTimeout(hiddenTimeoutRef.current);
-      hiddenTimeoutRef.current = null;
-    }
-    try { await axios.post(`${API}/auth/logout`); } catch {}
+    try {
+      await axios.post(`${API}/auth/logout`);
+    } catch {}
     sessionStorage.removeItem('token');
     setToken(null);
     setUser(null);
