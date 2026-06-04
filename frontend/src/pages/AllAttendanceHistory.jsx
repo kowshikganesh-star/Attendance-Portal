@@ -27,7 +27,7 @@ const groupRecords = (records) => {
         sessions:     [],
         firstClockIn: record.clockIn,
         lastClockOut: record.clockOut,
-        totalMs:      0,       // sum of session durations ONLY (no gap time)
+        totalMs:      0,
         hasActive:    false,
       };
     }
@@ -45,7 +45,7 @@ const groupRecords = (records) => {
       if (!g.lastClockOut || new Date(record.clockOut) > new Date(g.lastClockOut)) {
         g.lastClockOut = record.clockOut;
       }
-      // Add ONLY this session duration — gap time excluded ✅
+      // Sum actual session durations only — gap time excluded ✅
       g.totalMs += new Date(record.clockOut) - new Date(record.clockIn);
     } else {
       g.hasActive = true;
@@ -88,10 +88,10 @@ const buildWorkBlocks = (sessions) => {
       : Infinity;
 
     if (gapMinutes < 30) {
-      // Same block — add session
+      // Same block — gap < 30 mins
       current.sessions.push(session);
       if (session.clockOut) {
-        // Only add session duration — NOT the gap ✅
+        // Add session duration only — NOT the gap ✅
         current.totalMs += new Date(session.clockOut) - new Date(session.clockIn);
         if (!current.lastClockOut ||
             new Date(session.clockOut) > new Date(current.lastClockOut)) {
@@ -186,6 +186,9 @@ const AllAttendanceHistory = () => {
     return formatMs(new Date(clockOut) - new Date(clockIn));
   };
 
+  // Flag unusual activity — more than 5 sessions in a day
+  const isUnusual = (sessions) => sessions.length > 5;
+
   const grouped = groupRecords(records);
 
   return (
@@ -222,7 +225,9 @@ const AllAttendanceHistory = () => {
           </button>
           <div>
             <h1 className="text-2xl font-bold">All Attendance Records</h1>
-            <p className="text-slate-400 text-sm">Daily summary — click any row to see work blocks</p>
+            <p className="text-slate-400 text-sm">
+              Daily summary — click any row to see work blocks
+            </p>
           </div>
         </div>
 
@@ -247,26 +252,30 @@ const AllAttendanceHistory = () => {
             {filterType === 'month' ? (
               <input type="month" value={month}
                 onChange={(e) => setMonth(e.target.value)}
-                className="px-4 py-2 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                className="px-4 py-2 bg-slate-800 border border-slate-700 rounded-xl
+                           text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
             ) : (
               <>
                 <div className="flex items-center gap-2">
                   <span className="text-slate-400 text-sm">From</span>
                   <input type="date" value={startDate}
                     onChange={(e) => setStartDate(e.target.value)}
-                    className="px-4 py-2 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                    className="px-4 py-2 bg-slate-800 border border-slate-700 rounded-xl
+                               text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-slate-400 text-sm">To</span>
                   <input type="date" value={endDate}
                     onChange={(e) => setEndDate(e.target.value)}
-                    className="px-4 py-2 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                    className="px-4 py-2 bg-slate-800 border border-slate-700 rounded-xl
+                               text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
                 </div>
               </>
             )}
             <select value={selectedUser}
               onChange={(e) => setSelectedUser(e.target.value)}
-              className="px-4 py-2 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              className="px-4 py-2 bg-slate-800 border border-slate-700 rounded-xl
+                         text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
               <option value="">All Employees</option>
               {employees.map((emp) => (
                 <option key={emp.id} value={emp.id}>{emp.name}</option>
@@ -274,7 +283,8 @@ const AllAttendanceHistory = () => {
             </select>
             {filterType === 'range' && (
               <button onClick={fetchHistory}
-                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded-xl transition-all">
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500
+                           text-white text-sm rounded-xl transition-all">
                 Apply
               </button>
             )}
@@ -284,10 +294,10 @@ const AllAttendanceHistory = () => {
         {/* Summary Cards */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
           {[
-            { label: 'Total Days',   value: grouped.length },
-            { label: 'Complete',     value: grouped.filter((g) => !g.hasActive).length, color: 'text-emerald-400' },
-            { label: 'Still Active', value: grouped.filter((g) =>  g.hasActive).length, color: 'text-amber-400'   },
-            { label: 'Employees',    value: [...new Set(records.map((r) => r.userId))].length, color: 'text-indigo-400' },
+            { label: 'Total Days',      value: grouped.length },
+            { label: 'Complete',        value: grouped.filter((g) => !g.hasActive).length, color: 'text-emerald-400' },
+            { label: 'Still Active',    value: grouped.filter((g) =>  g.hasActive).length, color: 'text-amber-400'   },
+            { label: 'Unusual Activity',value: grouped.filter((g) => isUnusual(g.sessions)).length, color: 'text-red-400' },
           ].map(({ label, value, color = 'text-white' }) => (
             <div key={label} className="bg-slate-900 border border-slate-800 rounded-xl p-4">
               <p className="text-slate-400 text-xs">{label}</p>
@@ -322,14 +332,19 @@ const AllAttendanceHistory = () => {
             <div className="divide-y divide-slate-800">
               {grouped.map((g) => {
                 const workBlocks = buildWorkBlocks(g.sessions);
+                const unusual    = isUnusual(g.sessions);
+
                 return (
                   <div key={g.key}>
 
                     {/* ── Summary Row — clickable ── */}
                     <div
                       onClick={() => toggleExpand(g.key)}
-                      className="flex items-center justify-between px-6 py-4
-                                 hover:bg-slate-800/50 cursor-pointer transition-colors"
+                      className={`flex items-center justify-between px-6 py-4
+                                 cursor-pointer transition-colors
+                                 ${unusual
+                                   ? 'hover:bg-red-950/20 border-l-2 border-red-500/50'
+                                   : 'hover:bg-slate-800/50'}`}
                     >
                       {/* Employee */}
                       <div className="flex items-center gap-3 w-48">
@@ -337,7 +352,14 @@ const AllAttendanceHistory = () => {
                           {g.user.name.charAt(0)}
                         </div>
                         <div>
-                          <p className="text-sm font-medium text-white">{g.user.name}</p>
+                          <div className="flex items-center gap-2">
+                            <p className="text-sm font-medium text-white">{g.user.name}</p>
+                            {unusual && (
+                              <span className="text-xs text-red-400" title="Unusual activity">
+                                ⚠️
+                              </span>
+                            )}
+                          </div>
                           <p className="text-xs text-slate-400">{g.user.email}</p>
                         </div>
                       </div>
@@ -364,9 +386,10 @@ const AllAttendanceHistory = () => {
                         {formatMs(g.totalMs)}
                       </div>
 
-                      {/* Work blocks count */}
-                      <div className="text-xs text-slate-400 w-24">
-                        {workBlocks.length} work block{workBlocks.length > 1 ? 's' : ''}
+                      {/* Sessions count */}
+                      <div className={`text-xs w-24 ${unusual ? 'text-red-400' : 'text-slate-400'}`}>
+                        {g.sessions.length} session{g.sessions.length > 1 ? 's' : ''}
+                        {unusual && ' ⚠️'}
                       </div>
 
                       {/* Status */}
@@ -393,6 +416,21 @@ const AllAttendanceHistory = () => {
                     {/* ── Expanded Work Blocks ── */}
                     {expanded[g.key] && (
                       <div className="bg-slate-950 border-t border-slate-800 px-6 py-4">
+
+                        {/* Unusual warning */}
+                        {unusual && (
+                          <div className="mb-4 px-4 py-3 bg-red-500/10 border border-red-500/20 rounded-xl">
+                            <p className="text-red-400 text-sm font-medium">
+                              ⚠️ Unusual Activity
+                            </p>
+                            <p className="text-slate-400 text-xs mt-1">
+                              {g.sessions.length} sessions in one day.
+                              All sessions are recorded accurately.
+                              Review if needed.
+                            </p>
+                          </div>
+                        )}
+
                         <p className="text-xs text-slate-500 uppercase tracking-widest mb-4">
                           Work Blocks — {formatDate(g.date)}
                         </p>
@@ -416,47 +454,36 @@ const AllAttendanceHistory = () => {
                                       : '🟡 Active'}
                                   </span>
                                 </div>
-                                <span className="text-sm font-bold text-white">
-                                  {formatMs(block.totalMs)}
-                                  <span className="text-xs text-slate-500 font-normal ml-1">
-                                    (gaps excluded)
+                                <div className="text-right">
+                                  <span className="text-sm font-bold text-white">
+                                    {formatMs(block.totalMs)}
                                   </span>
-                                </span>
+                                  <p className="text-xs text-slate-500">
+                                    gaps not counted
+                                  </p>
+                                </div>
                               </div>
 
-                              {/* Individual sessions in block */}
+                              {/* All sessions in block — raw, no greying ✅ */}
                               <div className="divide-y divide-slate-800/50">
-                                {block.sessions.map((session, si) => {
-                                  const durMs     = session.clockOut
-                                    ? new Date(session.clockOut) - new Date(session.clockIn)
-                                    : null;
-                                  const tooShort  = durMs !== null && durMs < 2 * 60 * 1000;
-
-                                  return (
-                                    <div key={session.id}
-                                      className={`flex items-center gap-4 px-4 py-2.5
-                                        ${tooShort ? 'opacity-40' : ''}`}>
-                                      <span className="text-xs text-slate-600 w-5">
-                                        {si + 1}
-                                      </span>
-                                      <span className="text-xs text-slate-400">
-                                        {formatTime(session.clockIn)}
-                                        &nbsp;→&nbsp;
-                                        {session.clockOut
-                                          ? formatTime(session.clockOut)
-                                          : 'Active'}
-                                      </span>
-                                      <span className="text-xs font-medium text-slate-300">
-                                        {getDuration(session.clockIn, session.clockOut)}
-                                      </span>
-                                      {tooShort && (
-                                        <span className="text-xs text-slate-600 ml-auto">
-                                          too short
-                                        </span>
-                                      )}
-                                    </div>
-                                  );
-                                })}
+                                {block.sessions.map((session, si) => (
+                                  <div key={session.id}
+                                    className="flex items-center gap-4 px-4 py-2.5">
+                                    <span className="text-xs text-slate-600 w-5">
+                                      {si + 1}
+                                    </span>
+                                    <span className="text-xs text-slate-400">
+                                      {formatTime(session.clockIn)}
+                                      &nbsp;→&nbsp;
+                                      {session.clockOut
+                                        ? formatTime(session.clockOut)
+                                        : 'Active'}
+                                    </span>
+                                    <span className="text-xs font-medium text-slate-300">
+                                      {getDuration(session.clockIn, session.clockOut)}
+                                    </span>
+                                  </div>
+                                ))}
                               </div>
                             </div>
                           ))}
@@ -471,7 +498,9 @@ const AllAttendanceHistory = () => {
                           </span>
                           <span className="text-sm text-slate-400">
                             Total worked:&nbsp;
-                            <span className="text-white font-bold">{formatMs(g.totalMs)}</span>
+                            <span className="text-white font-bold">
+                              {formatMs(g.totalMs)}
+                            </span>
                           </span>
                         </div>
                       </div>
