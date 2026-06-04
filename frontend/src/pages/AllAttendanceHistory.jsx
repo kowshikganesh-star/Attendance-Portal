@@ -27,40 +27,96 @@ const groupRecords = (records) => {
         sessions:     [],
         firstClockIn: record.clockIn,
         lastClockOut: record.clockOut,
-        totalMs:      0,
+        totalMs:      0,       // sum of session durations ONLY (no gap time)
         hasActive:    false,
       };
     }
 
     const g = grouped[key];
-
-    // Add session
     g.sessions.push(record);
 
-    // Track first clock in (earliest)
+    // Track first clock in
     if (new Date(record.clockIn) < new Date(g.firstClockIn)) {
       g.firstClockIn = record.clockIn;
     }
 
-    // Track last clock out (latest)
+    // Track last clock out
     if (record.clockOut) {
       if (!g.lastClockOut || new Date(record.clockOut) > new Date(g.lastClockOut)) {
         g.lastClockOut = record.clockOut;
       }
-    } else {
-      g.hasActive = true; // still clocked in
-    }
-
-    // Add duration of completed sessions
-    if (record.clockOut) {
+      // Add ONLY this session duration — gap time excluded ✅
       g.totalMs += new Date(record.clockOut) - new Date(record.clockIn);
+    } else {
+      g.hasActive = true;
     }
   });
 
-  // Sort by date descending
   return Object.values(grouped).sort(
     (a, b) => new Date(b.date) - new Date(a.date)
   );
+};
+
+// ── Group sessions into work blocks (gap < 30 mins = same block) ─
+const buildWorkBlocks = (sessions) => {
+  if (!sessions.length) return [];
+
+  const sorted = [...sessions].sort(
+    (a, b) => new Date(a.clockIn) - new Date(b.clockIn)
+  );
+
+  const blocks  = [];
+  let   current = null;
+
+  sorted.forEach((session) => {
+    if (!current) {
+      current = {
+        sessions:     [session],
+        firstClockIn: session.clockIn,
+        lastClockOut: session.clockOut,
+        totalMs:      session.clockOut
+          ? new Date(session.clockOut) - new Date(session.clockIn)
+          : 0,
+        hasActive: !session.clockOut,
+      };
+      return;
+    }
+
+    const lastEnd    = current.lastClockOut ? new Date(current.lastClockOut) : null;
+    const gapMinutes = lastEnd
+      ? Math.floor((new Date(session.clockIn) - lastEnd) / 60000)
+      : Infinity;
+
+    if (gapMinutes < 30) {
+      // Same block — add session
+      current.sessions.push(session);
+      if (session.clockOut) {
+        // Only add session duration — NOT the gap ✅
+        current.totalMs += new Date(session.clockOut) - new Date(session.clockIn);
+        if (!current.lastClockOut ||
+            new Date(session.clockOut) > new Date(current.lastClockOut)) {
+          current.lastClockOut = session.clockOut;
+        }
+      } else {
+        current.hasActive = true;
+      }
+    } else {
+      // Gap >= 30 mins — new block (lunch break etc)
+      blocks.push(current);
+      current = {
+        sessions:     [session],
+        firstClockIn: session.clockIn,
+        lastClockOut: session.clockOut,
+        totalMs:      session.clockOut
+          ? new Date(session.clockOut) - new Date(session.clockIn)
+          : 0,
+        hasActive: !session.clockOut,
+      };
+    }
+  });
+
+  if (current) blocks.push(current);
+  return blocks;
 };
 
 const AllAttendanceHistory = () => {
@@ -78,7 +134,7 @@ const AllAttendanceHistory = () => {
   const [records,      setRecords]      = useState([]);
   const [employees,    setEmployees]    = useState([]);
   const [loading,      setLoading]      = useState(true);
-  const [expanded,     setExpanded]     = useState({}); // which rows are expanded
+  const [expanded,     setExpanded]     = useState({});
 
   const fetchHistory = useCallback(async () => {
     setLoading(true);
@@ -105,13 +161,13 @@ const AllAttendanceHistory = () => {
 
   useEffect(() => { fetchHistory(); }, [fetchHistory]);
 
-  // Toggle expand/collapse a row
-  const toggleExpand = (key) => {
+  const toggleExpand = (key) =>
     setExpanded((prev) => ({ ...prev, [key]: !prev[key] }));
-  };
 
   const formatTime = (date) => date
-    ? new Date(date).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })
+    ? new Date(date).toLocaleTimeString('en-US', {
+        hour: '2-digit', minute: '2-digit', hour12: true,
+      })
     : '—';
 
   const formatDate = (dateStr) =>
@@ -166,7 +222,7 @@ const AllAttendanceHistory = () => {
           </button>
           <div>
             <h1 className="text-2xl font-bold">All Attendance Records</h1>
-            <p className="text-slate-400 text-sm">Daily summary — click any row to see sessions</p>
+            <p className="text-slate-400 text-sm">Daily summary — click any row to see work blocks</p>
           </div>
         </div>
 
@@ -180,30 +236,36 @@ const AllAttendanceHistory = () => {
             {['month', 'range'].map((type) => (
               <button key={type} onClick={() => setFilterType(type)}
                 className={`px-4 py-2 rounded-lg text-sm font-medium transition-all
-                  ${filterType === type ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'}`}>
+                  ${filterType === type
+                    ? 'bg-indigo-600 text-white'
+                    : 'bg-slate-800 text-slate-400 hover:text-white'}`}>
                 {type === 'month' ? '📅 By Month' : '📆 Date Range'}
               </button>
             ))}
           </div>
           <div className="flex flex-wrap gap-3 items-end">
             {filterType === 'month' ? (
-              <input type="month" value={month} onChange={(e) => setMonth(e.target.value)}
+              <input type="month" value={month}
+                onChange={(e) => setMonth(e.target.value)}
                 className="px-4 py-2 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
             ) : (
               <>
                 <div className="flex items-center gap-2">
                   <span className="text-slate-400 text-sm">From</span>
-                  <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)}
+                  <input type="date" value={startDate}
+                    onChange={(e) => setStartDate(e.target.value)}
                     className="px-4 py-2 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-slate-400 text-sm">To</span>
-                  <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)}
+                  <input type="date" value={endDate}
+                    onChange={(e) => setEndDate(e.target.value)}
                     className="px-4 py-2 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
                 </div>
               </>
             )}
-            <select value={selectedUser} onChange={(e) => setSelectedUser(e.target.value)}
+            <select value={selectedUser}
+              onChange={(e) => setSelectedUser(e.target.value)}
               className="px-4 py-2 bg-slate-800 border border-slate-700 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
               <option value="">All Employees</option>
               {employees.map((emp) => (
@@ -223,8 +285,8 @@ const AllAttendanceHistory = () => {
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
           {[
             { label: 'Total Days',   value: grouped.length },
-            { label: 'Complete',     value: grouped.filter((g) => !g.hasActive).length,  color: 'text-emerald-400' },
-            { label: 'Still Active', value: grouped.filter((g) => g.hasActive).length,   color: 'text-amber-400'   },
+            { label: 'Complete',     value: grouped.filter((g) => !g.hasActive).length, color: 'text-emerald-400' },
+            { label: 'Still Active', value: grouped.filter((g) =>  g.hasActive).length, color: 'text-amber-400'   },
             { label: 'Employees',    value: [...new Set(records.map((r) => r.userId))].length, color: 'text-indigo-400' },
           ].map(({ label, value, color = 'text-white' }) => (
             <div key={label} className="bg-slate-900 border border-slate-800 rounded-xl p-4">
@@ -243,7 +305,7 @@ const AllAttendanceHistory = () => {
               {grouped.length} days
             </span>
             <span className="text-xs text-slate-500 ml-2">
-              👆 Click any row to see sessions
+              👆 Click row to see work blocks
             </span>
           </div>
 
@@ -258,111 +320,166 @@ const AllAttendanceHistory = () => {
             </div>
           ) : (
             <div className="divide-y divide-slate-800">
-              {grouped.map((g) => (
-                <div key={g.key}>
+              {grouped.map((g) => {
+                const workBlocks = buildWorkBlocks(g.sessions);
+                return (
+                  <div key={g.key}>
 
-                  {/* Summary Row — clickable */}
-                  <div
-                    onClick={() => toggleExpand(g.key)}
-                    className="flex items-center justify-between px-6 py-4
-                               hover:bg-slate-800/50 cursor-pointer transition-colors"
-                  >
-                    {/* Employee */}
-                    <div className="flex items-center gap-3 w-48">
-                      <div className="w-9 h-9 bg-indigo-600 rounded-full flex items-center justify-center font-bold text-sm flex-shrink-0">
-                        {g.user.name.charAt(0)}
+                    {/* ── Summary Row — clickable ── */}
+                    <div
+                      onClick={() => toggleExpand(g.key)}
+                      className="flex items-center justify-between px-6 py-4
+                                 hover:bg-slate-800/50 cursor-pointer transition-colors"
+                    >
+                      {/* Employee */}
+                      <div className="flex items-center gap-3 w-48">
+                        <div className="w-9 h-9 bg-indigo-600 rounded-full flex items-center justify-center font-bold text-sm flex-shrink-0">
+                          {g.user.name.charAt(0)}
+                        </div>
+                        <div>
+                          <p className="text-sm font-medium text-white">{g.user.name}</p>
+                          <p className="text-xs text-slate-400">{g.user.email}</p>
+                        </div>
                       </div>
-                      <div>
-                        <p className="text-sm font-medium text-white">{g.user.name}</p>
-                        <p className="text-xs text-slate-400">{g.user.email}</p>
+
+                      {/* Date */}
+                      <div className="text-sm text-slate-300 w-28">
+                        {formatDate(g.date)}
+                      </div>
+
+                      {/* First In */}
+                      <div className="text-sm text-slate-300 w-24">
+                        🟢 {formatTime(g.firstClockIn)}
+                      </div>
+
+                      {/* Last Out */}
+                      <div className="text-sm text-slate-300 w-24">
+                        {g.lastClockOut
+                          ? `🔴 ${formatTime(g.lastClockOut)}`
+                          : '🟡 Active'}
+                      </div>
+
+                      {/* Total Hours — gap excluded ✅ */}
+                      <div className="text-sm font-bold text-white w-20">
+                        {formatMs(g.totalMs)}
+                      </div>
+
+                      {/* Work blocks count */}
+                      <div className="text-xs text-slate-400 w-24">
+                        {workBlocks.length} work block{workBlocks.length > 1 ? 's' : ''}
+                      </div>
+
+                      {/* Status */}
+                      <div className="w-24">
+                        {g.hasActive ? (
+                          <span className="inline-flex items-center gap-1.5 text-xs bg-amber-500/20 text-amber-400 border border-amber-500/30 px-2.5 py-1 rounded-full">
+                            <AlertCircle className="w-3 h-3" /> Active
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1.5 text-xs bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-1 rounded-full">
+                            <CheckCircle className="w-3 h-3" /> Complete
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Expand icon */}
+                      <div className="text-slate-400 w-6">
+                        {expanded[g.key]
+                          ? <ChevronUp className="w-4 h-4" />
+                          : <ChevronDown className="w-4 h-4" />}
                       </div>
                     </div>
 
-                    {/* Date */}
-                    <div className="text-sm text-slate-300 w-28">
-                      {formatDate(g.date)}
-                    </div>
+                    {/* ── Expanded Work Blocks ── */}
+                    {expanded[g.key] && (
+                      <div className="bg-slate-950 border-t border-slate-800 px-6 py-4">
+                        <p className="text-xs text-slate-500 uppercase tracking-widest mb-4">
+                          Work Blocks — {formatDate(g.date)}
+                        </p>
 
-                    {/* First In */}
-                    <div className="text-sm text-slate-300 w-24">
-                      🟢 {formatTime(g.firstClockIn)}
-                    </div>
+                        <div className="space-y-4">
+                          {workBlocks.map((block, bi) => (
+                            <div key={bi}
+                              className="bg-slate-900 rounded-xl overflow-hidden">
 
-                    {/* Last Out */}
-                    <div className="text-sm text-slate-300 w-24">
-                      {g.lastClockOut ? `🔴 ${formatTime(g.lastClockOut)}` : '🟡 Active'}
-                    </div>
+                              {/* Block header */}
+                              <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
+                                <div className="flex items-center gap-3">
+                                  <span className="text-xs font-bold text-indigo-400 bg-indigo-500/20 px-2 py-0.5 rounded-full">
+                                    Block {bi + 1}
+                                  </span>
+                                  <span className="text-sm text-slate-300">
+                                    🟢 {formatTime(block.firstClockIn)}
+                                    &nbsp;→&nbsp;
+                                    {block.lastClockOut
+                                      ? `🔴 ${formatTime(block.lastClockOut)}`
+                                      : '🟡 Active'}
+                                  </span>
+                                </div>
+                                <span className="text-sm font-bold text-white">
+                                  {formatMs(block.totalMs)}
+                                  <span className="text-xs text-slate-500 font-normal ml-1">
+                                    (gaps excluded)
+                                  </span>
+                                </span>
+                              </div>
 
-                    {/* Total Hours */}
-                    <div className="text-sm font-bold text-white w-20">
-                      {formatMs(g.totalMs)}
-                    </div>
+                              {/* Individual sessions in block */}
+                              <div className="divide-y divide-slate-800/50">
+                                {block.sessions.map((session, si) => {
+                                  const durMs     = session.clockOut
+                                    ? new Date(session.clockOut) - new Date(session.clockIn)
+                                    : null;
+                                  const tooShort  = durMs !== null && durMs < 2 * 60 * 1000;
 
-                    {/* Sessions count */}
-                    <div className="text-xs text-slate-400 w-20">
-                      {g.sessions.length} session{g.sessions.length > 1 ? 's' : ''}
-                    </div>
+                                  return (
+                                    <div key={session.id}
+                                      className={`flex items-center gap-4 px-4 py-2.5
+                                        ${tooShort ? 'opacity-40' : ''}`}>
+                                      <span className="text-xs text-slate-600 w-5">
+                                        {si + 1}
+                                      </span>
+                                      <span className="text-xs text-slate-400">
+                                        {formatTime(session.clockIn)}
+                                        &nbsp;→&nbsp;
+                                        {session.clockOut
+                                          ? formatTime(session.clockOut)
+                                          : 'Active'}
+                                      </span>
+                                      <span className="text-xs font-medium text-slate-300">
+                                        {getDuration(session.clockIn, session.clockOut)}
+                                      </span>
+                                      {tooShort && (
+                                        <span className="text-xs text-slate-600 ml-auto">
+                                          too short
+                                        </span>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
 
-                    {/* Status */}
-                    <div className="w-24">
-                      {g.hasActive ? (
-                        <span className="inline-flex items-center gap-1.5 text-xs bg-amber-500/20 text-amber-400 border border-amber-500/30 px-2.5 py-1 rounded-full">
-                          <AlertCircle className="w-3 h-3" /> Active
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1.5 text-xs bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-1 rounded-full">
-                          <CheckCircle className="w-3 h-3" /> Complete
-                        </span>
-                      )}
-                    </div>
+                        {/* Day total */}
+                        <div className="mt-4 pt-3 border-t border-slate-800 flex justify-between items-center">
+                          <span className="text-xs text-slate-500">
+                            {g.sessions.length} raw session{g.sessions.length > 1 ? 's' : ''}
+                            &nbsp;→&nbsp;
+                            {workBlocks.length} work block{workBlocks.length > 1 ? 's' : ''}
+                          </span>
+                          <span className="text-sm text-slate-400">
+                            Total worked:&nbsp;
+                            <span className="text-white font-bold">{formatMs(g.totalMs)}</span>
+                          </span>
+                        </div>
+                      </div>
+                    )}
 
-                    {/* Expand icon */}
-                    <div className="text-slate-400 w-6">
-                      {expanded[g.key]
-                        ? <ChevronUp className="w-4 h-4" />
-                        : <ChevronDown className="w-4 h-4" />}
-                    </div>
                   </div>
-
-                  {/* Expanded Sessions */}
-                  {expanded[g.key] && (
-                    <div className="bg-slate-950 border-t border-slate-800 px-6 py-4">
-                      <p className="text-xs text-slate-500 uppercase tracking-widest mb-3">
-                        All Sessions — {formatDate(g.date)}
-                      </p>
-                      <div className="space-y-2">
-                        {g.sessions.map((session, i) => (
-                          <div key={session.id}
-                            className="flex items-center gap-4 px-4 py-3 bg-slate-900 rounded-xl">
-                            <span className="text-xs text-slate-500 w-6">#{i + 1}</span>
-                            <span className="text-sm text-slate-300">
-                              🟢 {formatTime(session.clockIn)}
-                            </span>
-                            <span className="text-slate-600">→</span>
-                            <span className="text-sm text-slate-300">
-                              {session.clockOut
-                                ? `🔴 ${formatTime(session.clockOut)}`
-                                : '🟡 Still Active'}
-                            </span>
-                            <span className="text-sm font-semibold text-white ml-2">
-                              {getDuration(session.clockIn, session.clockOut)}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-
-                      {/* Day total */}
-                      <div className="mt-3 pt-3 border-t border-slate-800 flex justify-end">
-                        <span className="text-sm text-slate-400">
-                          Total worked:&nbsp;
-                          <span className="text-white font-bold">{formatMs(g.totalMs)}</span>
-                        </span>
-                      </div>
-                    </div>
-                  )}
-
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
