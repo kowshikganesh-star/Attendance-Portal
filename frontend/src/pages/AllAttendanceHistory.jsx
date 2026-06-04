@@ -175,15 +175,25 @@ const AllAttendanceHistory = () => {
       weekday: 'short', month: 'short', day: 'numeric',
     });
 
-  const formatMs = (ms) => {
+  // showSeconds = true for individual sessions
+  // showSeconds = false for summary totals
+  const formatMs = (ms, showSeconds = false) => {
     const h = Math.floor(ms / 3600000);
     const m = Math.floor((ms % 3600000) / 60000);
+    const s = Math.floor((ms % 60000) / 1000);
+
+    // Always show seconds if duration is under 1 hour
+    // or if showSeconds explicitly requested
+    if (showSeconds || h === 0) {
+      return `${h}h ${m}m ${s}s`;
+    }
     return `${h}h ${m}m`;
   };
 
+  // Individual session duration — always show seconds
   const getDuration = (clockIn, clockOut) => {
     if (!clockOut) return '—';
-    return formatMs(new Date(clockOut) - new Date(clockIn));
+    return formatMs(new Date(clockOut) - new Date(clockIn), true);
   };
 
   // Flag unusual activity — more than 5 sessions in a day
@@ -456,7 +466,7 @@ const AllAttendanceHistory = () => {
                                 </div>
                                 <div className="text-right">
                                   <span className="text-sm font-bold text-white">
-                                    {formatMs(block.totalMs)}
+                                    {formatMs(block.totalMs, true)}
                                   </span>
                                   <p className="text-xs text-slate-500">
                                     gaps not counted
