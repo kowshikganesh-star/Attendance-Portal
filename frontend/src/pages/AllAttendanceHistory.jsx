@@ -4,19 +4,62 @@ import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import toast, { Toaster } from 'react-hot-toast';
-import { ShieldCheck, LogOut, ArrowLeft, Calendar, Filter, CheckCircle, AlertCircle } from 'lucide-react';
+import {
+  ShieldCheck, LogOut, ArrowLeft, Calendar,
+  Filter, CheckCircle, AlertCircle, ChevronDown, ChevronUp,
+} from 'lucide-react';
 
 const API = import.meta.env.VITE_API_URL;
 
-const RoleBadge = ({ role }) => {
-  const styles = {
-    ADMIN:    'bg-indigo-500/20 text-indigo-400 border-indigo-500/30',
-    EMPLOYEE: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30',
-  };
-  return (
-    <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${styles[role] || styles.EMPLOYEE}`}>
-      {role}
-    </span>
+// ── Group raw records by employee + date ──────────────────
+const groupRecords = (records) => {
+  const grouped = {};
+
+  records.forEach((record) => {
+    const date = new Date(record.clockIn).toLocaleDateString('en-CA');
+    const key  = `${record.userId}_${date}`;
+
+    if (!grouped[key]) {
+      grouped[key] = {
+        key,
+        user:         record.user,
+        date,
+        sessions:     [],
+        firstClockIn: record.clockIn,
+        lastClockOut: record.clockOut,
+        totalMs:      0,
+        hasActive:    false,
+      };
+    }
+
+    const g = grouped[key];
+
+    // Add session
+    g.sessions.push(record);
+
+    // Track first clock in (earliest)
+    if (new Date(record.clockIn) < new Date(g.firstClockIn)) {
+      g.firstClockIn = record.clockIn;
+    }
+
+    // Track last clock out (latest)
+    if (record.clockOut) {
+      if (!g.lastClockOut || new Date(record.clockOut) > new Date(g.lastClockOut)) {
+        g.lastClockOut = record.clockOut;
+      }
+    } else {
+      g.hasActive = true; // still clocked in
+    }
+
+    // Add duration of completed sessions
+    if (record.clockOut) {
+      g.totalMs += new Date(record.clockOut) - new Date(record.clockIn);
+    }
+  });
+
+  // Sort by date descending
+  return Object.values(grouped).sort(
+    (a, b) => new Date(b.date) - new Date(a.date)
   );
 };
 
@@ -35,6 +78,7 @@ const AllAttendanceHistory = () => {
   const [records,      setRecords]      = useState([]);
   const [employees,    setEmployees]    = useState([]);
   const [loading,      setLoading]      = useState(true);
+  const [expanded,     setExpanded]     = useState({}); // which rows are expanded
 
   const fetchHistory = useCallback(async () => {
     setLoading(true);
@@ -61,22 +105,32 @@ const AllAttendanceHistory = () => {
 
   useEffect(() => { fetchHistory(); }, [fetchHistory]);
 
+  // Toggle expand/collapse a row
+  const toggleExpand = (key) => {
+    setExpanded((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
   const formatTime = (date) => date
     ? new Date(date).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })
     : '—';
 
-  const formatDate = (date) =>
-    new Date(date).toLocaleDateString('en-US', {
+  const formatDate = (dateStr) =>
+    new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US', {
       weekday: 'short', month: 'short', day: 'numeric',
     });
 
-  const getDuration = (clockIn, clockOut) => {
-    if (!clockOut) return '—';
-    const ms = new Date(clockOut) - new Date(clockIn);
-    const h  = Math.floor(ms / 3600000);
-    const m  = Math.floor((ms % 3600000) / 60000);
+  const formatMs = (ms) => {
+    const h = Math.floor(ms / 3600000);
+    const m = Math.floor((ms % 3600000) / 60000);
     return `${h}h ${m}m`;
   };
+
+  const getDuration = (clockIn, clockOut) => {
+    if (!clockOut) return '—';
+    return formatMs(new Date(clockOut) - new Date(clockIn));
+  };
+
+  const grouped = groupRecords(records);
 
   return (
     <div className="min-h-screen bg-slate-950 text-white">
@@ -112,7 +166,7 @@ const AllAttendanceHistory = () => {
           </button>
           <div>
             <h1 className="text-2xl font-bold">All Attendance Records</h1>
-            <p className="text-slate-400 text-sm">View and filter all employee attendance</p>
+            <p className="text-slate-400 text-sm">Daily summary — click any row to see sessions</p>
           </div>
         </div>
 
@@ -165,13 +219,13 @@ const AllAttendanceHistory = () => {
           </div>
         </div>
 
-        {/* Summary */}
+        {/* Summary Cards */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
           {[
-            { label: 'Total Records',  value: records.length },
-            { label: 'Complete',       value: records.filter((r) => r.clockOut).length,  color: 'text-emerald-400' },
-            { label: 'Still Active',   value: records.filter((r) => !r.clockOut).length, color: 'text-amber-400'   },
-            { label: 'Employees',      value: [...new Set(records.map((r) => r.userId))].length, color: 'text-indigo-400' },
+            { label: 'Total Days',   value: grouped.length },
+            { label: 'Complete',     value: grouped.filter((g) => !g.hasActive).length,  color: 'text-emerald-400' },
+            { label: 'Still Active', value: grouped.filter((g) => g.hasActive).length,   color: 'text-amber-400'   },
+            { label: 'Employees',    value: [...new Set(records.map((r) => r.userId))].length, color: 'text-indigo-400' },
           ].map(({ label, value, color = 'text-white' }) => (
             <div key={label} className="bg-slate-900 border border-slate-800 rounded-xl p-4">
               <p className="text-slate-400 text-xs">{label}</p>
@@ -184,9 +238,12 @@ const AllAttendanceHistory = () => {
         <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
           <div className="px-6 py-4 border-b border-slate-800 flex items-center gap-2">
             <Calendar className="w-5 h-5 text-slate-400" />
-            <h2 className="font-semibold">Attendance Records</h2>
+            <h2 className="font-semibold">Daily Summary</h2>
             <span className="text-xs bg-slate-700 text-slate-300 px-2 py-0.5 rounded-full">
-              {records.length} entries
+              {grouped.length} days
+            </span>
+            <span className="text-xs text-slate-500 ml-2">
+              👆 Click any row to see sessions
             </span>
           </div>
 
@@ -194,57 +251,118 @@ const AllAttendanceHistory = () => {
             <div className="flex justify-center py-12">
               <div className="w-8 h-8 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin" />
             </div>
-          ) : records.length === 0 ? (
+          ) : grouped.length === 0 ? (
             <div className="text-center py-12 text-slate-500">
               <Calendar className="w-10 h-10 mx-auto mb-2 opacity-30" />
               <p>No records found.</p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead>
-                  <tr className="border-b border-slate-800 text-left">
-                    {['Employee', 'Role', 'Date', 'Clock In', 'Clock Out', 'Duration', 'Status'].map((h) => (
-                      <th key={h} className="px-6 py-3 text-xs font-medium text-slate-400 uppercase tracking-wider whitespace-nowrap">
-                        {h}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800">
-                  {records.map((record) => (
-                    <tr key={record.id} className="hover:bg-slate-800/50 transition-colors">
-                      <td className="px-6 py-4">
-                        <div className="flex items-center gap-3">
-                          <div className="w-8 h-8 bg-indigo-600 rounded-full flex items-center justify-center text-sm font-bold flex-shrink-0">
-                            {record.user.name.charAt(0)}
+            <div className="divide-y divide-slate-800">
+              {grouped.map((g) => (
+                <div key={g.key}>
+
+                  {/* Summary Row — clickable */}
+                  <div
+                    onClick={() => toggleExpand(g.key)}
+                    className="flex items-center justify-between px-6 py-4
+                               hover:bg-slate-800/50 cursor-pointer transition-colors"
+                  >
+                    {/* Employee */}
+                    <div className="flex items-center gap-3 w-48">
+                      <div className="w-9 h-9 bg-indigo-600 rounded-full flex items-center justify-center font-bold text-sm flex-shrink-0">
+                        {g.user.name.charAt(0)}
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium text-white">{g.user.name}</p>
+                        <p className="text-xs text-slate-400">{g.user.email}</p>
+                      </div>
+                    </div>
+
+                    {/* Date */}
+                    <div className="text-sm text-slate-300 w-28">
+                      {formatDate(g.date)}
+                    </div>
+
+                    {/* First In */}
+                    <div className="text-sm text-slate-300 w-24">
+                      🟢 {formatTime(g.firstClockIn)}
+                    </div>
+
+                    {/* Last Out */}
+                    <div className="text-sm text-slate-300 w-24">
+                      {g.lastClockOut ? `🔴 ${formatTime(g.lastClockOut)}` : '🟡 Active'}
+                    </div>
+
+                    {/* Total Hours */}
+                    <div className="text-sm font-bold text-white w-20">
+                      {formatMs(g.totalMs)}
+                    </div>
+
+                    {/* Sessions count */}
+                    <div className="text-xs text-slate-400 w-20">
+                      {g.sessions.length} session{g.sessions.length > 1 ? 's' : ''}
+                    </div>
+
+                    {/* Status */}
+                    <div className="w-24">
+                      {g.hasActive ? (
+                        <span className="inline-flex items-center gap-1.5 text-xs bg-amber-500/20 text-amber-400 border border-amber-500/30 px-2.5 py-1 rounded-full">
+                          <AlertCircle className="w-3 h-3" /> Active
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1.5 text-xs bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-1 rounded-full">
+                          <CheckCircle className="w-3 h-3" /> Complete
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Expand icon */}
+                    <div className="text-slate-400 w-6">
+                      {expanded[g.key]
+                        ? <ChevronUp className="w-4 h-4" />
+                        : <ChevronDown className="w-4 h-4" />}
+                    </div>
+                  </div>
+
+                  {/* Expanded Sessions */}
+                  {expanded[g.key] && (
+                    <div className="bg-slate-950 border-t border-slate-800 px-6 py-4">
+                      <p className="text-xs text-slate-500 uppercase tracking-widest mb-3">
+                        All Sessions — {formatDate(g.date)}
+                      </p>
+                      <div className="space-y-2">
+                        {g.sessions.map((session, i) => (
+                          <div key={session.id}
+                            className="flex items-center gap-4 px-4 py-3 bg-slate-900 rounded-xl">
+                            <span className="text-xs text-slate-500 w-6">#{i + 1}</span>
+                            <span className="text-sm text-slate-300">
+                              🟢 {formatTime(session.clockIn)}
+                            </span>
+                            <span className="text-slate-600">→</span>
+                            <span className="text-sm text-slate-300">
+                              {session.clockOut
+                                ? `🔴 ${formatTime(session.clockOut)}`
+                                : '🟡 Still Active'}
+                            </span>
+                            <span className="text-sm font-semibold text-white ml-2">
+                              {getDuration(session.clockIn, session.clockOut)}
+                            </span>
                           </div>
-                          <div>
-                            <p className="text-sm font-medium text-white">{record.user.name}</p>
-                            <p className="text-xs text-slate-400">{record.user.email}</p>
-                          </div>
-                        </div>
-                      </td>
-                      <td className="px-6 py-4"><RoleBadge role={record.user.role} /></td>
-                      <td className="px-6 py-4 text-sm text-slate-300 whitespace-nowrap">{formatDate(record.clockIn)}</td>
-                      <td className="px-6 py-4 text-sm text-slate-300">{formatTime(record.clockIn)}</td>
-                      <td className="px-6 py-4 text-sm text-slate-300">{formatTime(record.clockOut)}</td>
-                      <td className="px-6 py-4 text-sm font-semibold text-white">{getDuration(record.clockIn, record.clockOut)}</td>
-                      <td className="px-6 py-4">
-                        {record.clockOut ? (
-                          <span className="inline-flex items-center gap-1.5 text-xs bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-1 rounded-full">
-                            <CheckCircle className="w-3 h-3" /> Complete
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center gap-1.5 text-xs bg-amber-500/20 text-amber-400 border border-amber-500/30 px-2.5 py-1 rounded-full">
-                            <AlertCircle className="w-3 h-3" /> Active
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                        ))}
+                      </div>
+
+                      {/* Day total */}
+                      <div className="mt-3 pt-3 border-t border-slate-800 flex justify-end">
+                        <span className="text-sm text-slate-400">
+                          Total worked:&nbsp;
+                          <span className="text-white font-bold">{formatMs(g.totalMs)}</span>
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                </div>
+              ))}
             </div>
           )}
         </div>
