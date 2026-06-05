@@ -89,14 +89,23 @@ export const getMySummary = async (req, res, next) => {
     }
 
     const dailyBreakdown = Object.entries(byDate).map(([date, sessions]) => {
-      const ms = sessions.filter((s) => s.clockOut)
+      const ms           = sessions.filter((s) => s.clockOut)
         .reduce((acc, s) => acc + (new Date(s.clockOut) - new Date(s.clockIn)), 0);
+      const sortedByTime = [...sessions].sort(
+        (a, b) => new Date(a.clockIn) - new Date(b.clockIn)
+      );
+      // First clock-in location for the day
+      const firstLocation = sortedByTime.find((s) => s.location)?.location || null;
+
       return {
         date,
         sessions:    sessions.length,
         hoursWorked: Math.floor(ms / 3600000),
         minutes:     Math.floor((ms % 3600000) / 60000),
+        seconds:     Math.floor((ms % 60000) / 1000),
+        totalMs:     ms,
         isComplete:  sessions.every((s) => s.clockOut),
+        location:    firstLocation,
       };
     }).sort((a, b) => new Date(b.date) - new Date(a.date));
 
