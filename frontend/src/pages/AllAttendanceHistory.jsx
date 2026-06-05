@@ -6,7 +6,7 @@ import { useNavigate } from 'react-router-dom';
 import toast, { Toaster } from 'react-hot-toast';
 import {
   ShieldCheck, LogOut, ArrowLeft, Calendar,
-  Filter, CheckCircle, AlertCircle, ChevronDown, ChevronUp,
+  Filter, CheckCircle, AlertCircle, ChevronDown, ChevronUp, Download,
 } from 'lucide-react';
 
 const API = import.meta.env.VITE_API_URL;
@@ -199,6 +199,95 @@ const AllAttendanceHistory = () => {
   // Flag unusual activity — more than 5 sessions in a day
   const isUnusual = (sessions) => sessions.length > 5;
 
+  // ── CSV Export ────────────────────────────────────────────
+  const exportCSV = () => {
+    if (records.length === 0) {
+      toast.error('No records to export.');
+      return;
+    }
+
+    const fmtTime = (d) => d
+      ? new Date(d).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true })
+      : '—';
+
+    const fmtDate = (d) =>
+      new Date(d + 'T00:00:00').toLocaleDateString('en-US', {
+        weekday: 'short', year: 'numeric', month: 'short', day: 'numeric',
+      });
+
+    const fmtDuration = (ms) => {
+      if (!ms || ms < 0) return '0h 0m 0s';
+      const h = Math.floor(ms / 3600000);
+      const m = Math.floor((ms % 3600000) / 60000);
+      const s = Math.floor((ms % 60000) / 1000);
+      return `${h}h ${m}m ${s}s`;
+    };
+
+    // Headers
+    const headers = [
+      'Employee Name',
+      'Email',
+      'Date',
+      'Session #',
+      'Clock In',
+      'Clock Out',
+      'Duration',
+      'Location',
+      'Day Total Worked',
+      'Day Status',
+    ];
+
+    const rows = [];
+
+    // Loop through grouped data
+    grouped.forEach((g) => {
+      // Sort sessions by clock in
+      const sortedSessions = [...g.sessions].sort(
+        (a, b) => new Date(a.clockIn) - new Date(b.clockIn)
+      );
+
+      sortedSessions.forEach((session, idx) => {
+        const sessionMs = session.clockOut
+          ? new Date(session.clockOut) - new Date(session.clockIn)
+          : null;
+
+        // Wrap location in quotes to handle commas
+        const location = session.location
+          ? `"${session.location.replace(/"/g, '""')}"`
+          : '—';
+
+        rows.push([
+          g.user.name,
+          g.user.email,
+          fmtDate(g.date),
+          idx + 1,
+          fmtTime(session.clockIn),
+          session.clockOut ? fmtTime(session.clockOut) : 'Active',
+          sessionMs !== null ? fmtDuration(sessionMs) : 'Active',
+          location,
+          fmtDuration(g.totalMs),
+          g.hasActive ? 'Active' : 'Complete',
+        ].join(','));
+      });
+    });
+
+    const csvContent  = [headers.join(','), ...rows].join('\n');
+    const blob        = new Blob([csvContent], { type: 'text/csv' });
+    const url         = window.URL.createObjectURL(blob);
+    const link        = document.createElement('a');
+    const fileName    = filterType === 'month'
+      ? `attendance_${month}.csv`
+      : `attendance_${startDate}_to_${endDate}.csv`;
+
+    link.href = url;
+    link.setAttribute('download', fileName);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+    toast.success('CSV downloaded!');
+  };
+
   const grouped = groupRecords(records);
 
   return (
@@ -228,17 +317,27 @@ const AllAttendanceHistory = () => {
       <main className="p-6 max-w-6xl mx-auto">
 
         {/* Header */}
-        <div className="flex items-center gap-3 mb-6">
-          <button onClick={() => navigate('/admin/dashboard')}
-            className="p-2 hover:bg-slate-800 rounded-lg transition-all text-slate-400 hover:text-white">
-            <ArrowLeft className="w-5 h-5" />
-          </button>
-          <div>
-            <h1 className="text-2xl font-bold">All Attendance Records</h1>
-            <p className="text-slate-400 text-sm">
-              Daily summary — click any row to see work blocks
-            </p>
+        <div className="flex items-center justify-between gap-3 mb-6">
+          <div className="flex items-center gap-3">
+            <button onClick={() => navigate('/admin/dashboard')}
+              className="p-2 hover:bg-slate-800 rounded-lg transition-all text-slate-400 hover:text-white">
+              <ArrowLeft className="w-5 h-5" />
+            </button>
+            <div>
+              <h1 className="text-2xl font-bold">All Attendance Records</h1>
+              <p className="text-slate-400 text-sm">
+                Daily summary — click any row to see work blocks
+              </p>
+            </div>
           </div>
+          <button onClick={exportCSV} disabled={records.length === 0}
+            className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500
+                       disabled:opacity-50 disabled:cursor-not-allowed
+                       text-white px-4 py-2.5 rounded-xl text-sm font-semibold
+                       transition-all shadow-lg shadow-indigo-600/20">
+            <Download className="w-4 h-4" />
+            Export CSV
+          </button>
         </div>
 
         {/* Filters */}
