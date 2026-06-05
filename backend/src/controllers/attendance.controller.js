@@ -15,6 +15,7 @@ export const clockIn = async (req, res, next) => {
     const { latitude, longitude, location } = req.body;
     const { start, end } = getTodayRange();
 
+    // ── Check already clocked in ──────────────────────────
     const openSession = await prisma.attendance.findFirst({
       where: { userId, clockIn: { gte: start, lte: end }, clockOut: null },
     });
@@ -26,6 +27,8 @@ export const clockIn = async (req, res, next) => {
       });
     }
 
+    // ── Always create fresh session ───────────────────────
+    // Gap calculation and display merging handled on frontend
     const attendance = await prisma.attendance.create({
       data: {
         userId,
@@ -105,6 +108,7 @@ export const getTodayStatus = async (req, res, next) => {
       totalWorked: {
         hours:   Math.floor(totalMs / 3600000),
         minutes: Math.floor((totalMs % 3600000) / 60000),
+        seconds: Math.floor((totalMs % 60000) / 1000),
       },
     });
   } catch (err) {
@@ -148,10 +152,12 @@ export const heartbeat = async (req, res, next) => {
       where: { userId, clockIn: { gte: start, lte: end }, clockOut: null },
     });
 
+    // No active session — return 200 silently
+    // Don't return 404 (causes console errors and looks like missing route)
     if (!openSession) {
-      return res.status(404).json({
+      return res.status(200).json({
         success: false,
-        message: 'No active session found.',
+        message: 'No active session.',
       });
     }
 
@@ -160,7 +166,10 @@ export const heartbeat = async (req, res, next) => {
       data:  { updatedAt: new Date() },
     });
 
-    return res.status(200).json({ success: true, message: 'Heartbeat received.' });
+    return res.status(200).json({
+      success: true,
+      message: 'Heartbeat received.',
+    });
   } catch (err) {
     next(err);
   }
