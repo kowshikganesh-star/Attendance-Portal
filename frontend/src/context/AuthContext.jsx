@@ -88,45 +88,88 @@ export const AuthProvider = ({ children }) => {
     };
   }, [user, token]);
 
-  // ── Page Visibility — screen sleep/wake handler ───────────
+  // ── keepalive fetch on tab close — ALL pages ─────────────
+  // Fires on tab close AND refresh
+  // On refresh: page reloads → checkAndClockIn restores session ✅
+  // On tab close: session closed permanently ✅
   useEffect(() => {
     if (!user || user.role !== 'EMPLOYEE' || !token) return;
 
+    const handleBeforeUnload = () => {
+      const savedToken = sessionStorage.getItem('token');
+      if (!savedToken) return;
+      fetch(`${API}/auth/logout`, {
+        method:    'POST',
+        headers: {
+          'Content-Type':  'application/json',
+          'Authorization': `Bearer ${savedToken}`,
+        },
+        body:      JSON.stringify({ token: savedToken }),
+        keepalive: true,
+      });
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+
+  }, [user, token]);
+
+  // ── Visibility + immediate clock-in check ─────────────────
+  // Runs immediately when user is set (handles refresh restore)
+  // Also runs on screen wake / tab switch back
+  useEffect(() => {
+    if (!user || user.role !== 'EMPLOYEE' || !token) return;
+
+    // Shared clock-in check — used in multiple places
+    const checkAndClockIn = async () => {
+      try {
+        const { data } = await axios.get(`${API}/attendance/today`);
+
+        if (!data.isClockedIn) {
+          const locationData = await getLocation();
+          await axios.post(`${API}/attendance/clock-in`, {
+            ...(locationData && {
+              latitude:  locationData.latitude,
+              longitude: locationData.longitude,
+              location:  locationData.location,
+            }),
+          });
+        }
+
+        // Restart heartbeat if stopped
+        if (!heartbeatRef.current) {
+          const sendHeartbeat = async () => {
+            try {
+              await axios.post(`${API}/attendance/heartbeat`);
+            } catch {
+              // Silent fail
+            }
+          };
+          sendHeartbeat();
+          heartbeatRef.current = setInterval(sendHeartbeat, 4 * 60 * 1000);
+        }
+      } catch {
+        // Silent fail
+      }
+    };
+
+    // ── Run immediately when user is restored ─────────────
+    // This handles the case where:
+    //   1. Page was refreshed (keepalive logged out, need to re-clock-in)
+    //   2. Page became visible after sleep
+    //   3. Token restored from sessionStorage
+    checkAndClockIn();
+
     const handleVisibilityChange = async () => {
       if (document.visibilityState === 'hidden') {
+        // Screen sleeping or tab hidden — stop heartbeat
         if (heartbeatRef.current) {
           clearInterval(heartbeatRef.current);
           heartbeatRef.current = null;
         }
       } else if (document.visibilityState === 'visible') {
-        try {
-          const { data } = await axios.get(`${API}/attendance/today`);
-
-          if (!data.isClockedIn) {
-            const locationData = await getLocation();
-            await axios.post(`${API}/attendance/clock-in`, {
-              ...(locationData && {
-                latitude:  locationData.latitude,
-                longitude: locationData.longitude,
-                location:  locationData.location,
-              }),
-            });
-          }
-
-          if (!heartbeatRef.current) {
-            const sendHeartbeat = async () => {
-              try {
-                await axios.post(`${API}/attendance/heartbeat`);
-              } catch {
-                // Silent fail
-              }
-            };
-            sendHeartbeat();
-            heartbeatRef.current = setInterval(sendHeartbeat, 4 * 60 * 1000);
-          }
-        } catch {
-          // Silent fail
-        }
+        // Screen woke up or tab came back — check clock-in
+        await checkAndClockIn();
       }
     };
 
