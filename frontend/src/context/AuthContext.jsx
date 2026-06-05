@@ -88,32 +88,6 @@ export const AuthProvider = ({ children }) => {
     };
   }, [user, token]);
 
-  // ── keepalive fetch on tab close — ALL pages ─────────────
-  // Fires on tab close AND refresh
-  // On refresh: page reloads → checkAndClockIn restores session ✅
-  // On tab close: session closed permanently ✅
-  useEffect(() => {
-    if (!user || user.role !== 'EMPLOYEE' || !token) return;
-
-    const handleBeforeUnload = () => {
-      const savedToken = sessionStorage.getItem('token');
-      if (!savedToken) return;
-      fetch(`${API}/auth/logout`, {
-        method:    'POST',
-        headers: {
-          'Content-Type':  'application/json',
-          'Authorization': `Bearer ${savedToken}`,
-        },
-        body:      JSON.stringify({ token: savedToken }),
-        keepalive: true,
-      });
-    };
-
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-
-  }, [user, token]);
-
   // ── Visibility + immediate clock-in check ─────────────────
   // Runs immediately when user is set (handles refresh restore)
   // Also runs on screen wake / tab switch back
