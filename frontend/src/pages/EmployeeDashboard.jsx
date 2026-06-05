@@ -9,7 +9,7 @@ import {
   Coffee, History, BarChart2, FileText,
 } from 'lucide-react';
 
-const API = import.meta.env.VITE_API_URL || 'https://attendance-portal-ic4z.onrender.com/api';
+const API = import.meta.env.VITE_API_URL;
 
 const EmployeeDashboard = () => {
   const { user, logout } = useAuth();
