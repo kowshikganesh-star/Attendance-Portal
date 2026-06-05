@@ -88,20 +88,25 @@ export const AuthProvider = ({ children }) => {
     };
   }, [user, token]);
 
-  // ── sendBeacon on tab close — works on ALL pages ─────────
+  // ── keepalive fetch on tab close — works on ALL pages ────
   useEffect(() => {
     if (!user || user.role !== 'EMPLOYEE' || !token) return;
 
     const handleBeforeUnload = () => {
       const savedToken = sessionStorage.getItem('token');
       if (!savedToken) return;
-      navigator.sendBeacon(
-        `${API}/auth/logout`,
-        new Blob(
-          [JSON.stringify({ token: savedToken })],
-          { type: 'application/json' }
-        )
-      );
+
+      // keepalive: true → completes even after tab closes ✅
+      // Unlike sendBeacon, this handles JSON + CORS correctly ✅
+      fetch(`${API}/auth/logout`, {
+        method:    'POST',
+        headers: {
+          'Content-Type':  'application/json',
+          'Authorization': `Bearer ${savedToken}`,
+        },
+        body:      JSON.stringify({ token: savedToken }),
+        keepalive: true,
+      });
     };
 
     window.addEventListener('beforeunload', handleBeforeUnload);
