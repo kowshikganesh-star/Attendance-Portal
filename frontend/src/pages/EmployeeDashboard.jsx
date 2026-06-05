@@ -64,6 +64,7 @@ const EmployeeDashboard = () => {
     toast.loading('Clocking out...', { id: 'logout' });
     await logout();
     toast.dismiss('logout');
+    navigate('/login');
   };
 
   const formatElapsed = (secs) => {
