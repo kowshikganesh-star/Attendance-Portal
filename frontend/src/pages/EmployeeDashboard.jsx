@@ -195,7 +195,7 @@ const EmployeeDashboard = () => {
             <p className="text-slate-400 text-sm mt-4">
               Total worked today (completed):&nbsp;
               <span className="text-white font-semibold">
-                {status.totalWorked.hours}h {status.totalWorked.minutes}m
+                {status.totalWorked.hours}h {status.totalWorked.minutes}m {status.totalWorked.seconds ?? 0}s
               </span>
             </p>
           )}
@@ -213,9 +213,12 @@ const EmployeeDashboard = () => {
             </div>
             <div className="space-y-3">
               {status.sessions.map((session, i) => {
-                const duration = session.clockOut
-                  ? Math.floor((new Date(session.clockOut) - new Date(session.clockIn)) / 60000)
+                const durationMs = session.clockOut
+                  ? new Date(session.clockOut) - new Date(session.clockIn)
                   : null;
+                const dh = durationMs !== null ? Math.floor(durationMs / 3600000) : 0;
+                const dm = durationMs !== null ? Math.floor((durationMs % 3600000) / 60000) : 0;
+                const ds = durationMs !== null ? Math.floor((durationMs % 60000) / 1000) : 0;
                 return (
                   <div key={session.id}
                     className="flex items-center justify-between p-3 bg-slate-800 rounded-xl">
@@ -226,9 +229,9 @@ const EmployeeDashboard = () => {
                           🟢 {formatTime(session.clockIn)}
                           {session.clockOut && ` → 🔴 ${formatTime(session.clockOut)}`}
                         </p>
-                        {duration !== null && (
+                        {durationMs !== null && (
                           <p className="text-xs text-slate-400">
-                            {Math.floor(duration / 60)}h {duration % 60}m
+                            {dh}h {dm}m {ds}s
                           </p>
                         )}
                       </div>
