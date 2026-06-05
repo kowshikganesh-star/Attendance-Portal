@@ -4,76 +4,193 @@ import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import toast, { Toaster } from 'react-hot-toast';
-import { ShieldCheck, LogOut, ArrowLeft, Download, TrendingUp, Clock, Users } from 'lucide-react';
+import {
+  ShieldCheck, LogOut, ArrowLeft,
+  Download, Calendar, Filter, TrendingUp,
+} from 'lucide-react';
 
 const API = import.meta.env.VITE_API_URL;
 
+// ── Group raw records by employee + date ──────────────────
+const groupByDay = (records) => {
+  const grouped = {};
+
+  records.forEach((record) => {
+    const date = new Date(record.clockIn).toLocaleDateString('en-CA');
+    const key  = `${record.userId}_${date}`;
+
+    if (!grouped[key]) {
+      grouped[key] = {
+        key,
+        userId:       record.user.id,
+        name:         record.user.name,
+        email:        record.user.email,
+        date,
+        firstClockIn: record.clockIn,
+        lastClockOut: record.clockOut || null,
+        totalMs:      0,
+        hasActive:    false,
+      };
+    }
+
+    const g = grouped[key];
+
+    // Track first clock in
+    if (new Date(record.clockIn) < new Date(g.firstClockIn)) {
+      g.firstClockIn = record.clockIn;
+    }
+
+    // Track last clock out
+    if (record.clockOut) {
+      if (!g.lastClockOut || new Date(record.clockOut) > new Date(g.lastClockOut)) {
+        g.lastClockOut = record.clockOut;
+      }
+      // Add actual session duration only (no gap time)
+      g.totalMs += new Date(record.clockOut) - new Date(record.clockIn);
+    } else {
+      g.hasActive = true;
+    }
+  });
+
+  return Object.values(grouped).sort(
+    (a, b) => new Date(b.date) - new Date(a.date)
+  );
+};
+
 const AllReports = () => {
-  const { user, logout, token } = useAuth();
-  const navigate                = useNavigate();
+  const { user, logout } = useAuth();
+  const navigate         = useNavigate();
 
   const now          = new Date();
   const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 
-  const [month,     setMonth]     = useState(currentMonth);
-  const [summaries, setSummaries] = useState([]);
-  const [loading,   setLoading]   = useState(true);
-  const [exporting, setExporting] = useState(false);
-  const [search,    setSearch]    = useState('');
+  const [month,        setMonth]        = useState(currentMonth);
+  const [selectedUser, setSelectedUser] = useState('');
+  const [records,      setRecords]      = useState([]);
+  const [employees,    setEmployees]    = useState([]);
+  const [loading,      setLoading]      = useState(true);
 
-  const fetchReport = useCallback(async () => {
+  // ── Fetch records ─────────────────────────────────────────
+  const fetchRecords = useCallback(async () => {
     setLoading(true);
     try {
-      const { data } = await axios.get(`${API}/reports/all`, { params: { month } });
-      setSummaries(data.summaries);
+      const params = { month };
+      if (selectedUser) params.userId = selectedUser;
+
+      const { data } = await axios.get(`${API}/attendance/history/all`, { params });
+      setRecords(data.records);
+      setEmployees(data.employees);
     } catch {
-      toast.error('Failed to load reports.');
+      toast.error('Failed to load report.');
     } finally {
       setLoading(false);
     }
-  }, [month]);
+  }, [month, selectedUser]);
 
-  useEffect(() => { fetchReport(); }, [fetchReport]);
+  useEffect(() => { fetchRecords(); }, [fetchRecords]);
 
-  const handleExport = async () => {
-    setExporting(true);
-    try {
-      const response = await axios.get(`${API}/reports/export`, {
-        params:       { month },
-        responseType: 'blob',
-        headers:      { Authorization: `Bearer ${token}` },
-      });
-      const url  = window.URL.createObjectURL(new Blob([response.data]));
-      const link = document.createElement('a');
-      link.href  = url;
-      link.setAttribute('download', `all_attendance_${month}.csv`);
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      toast.success('CSV downloaded!');
-    } catch {
-      toast.error('Export failed.');
-    } finally {
-      setExporting(false);
-    }
+  // ── Format helpers ────────────────────────────────────────
+  const formatTime = (d) => d
+    ? new Date(d).toLocaleTimeString('en-US', {
+        hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true,
+      })
+    : '—';
+
+  const formatDate = (dateStr) => {
+    const d     = new Date(dateStr + 'T00:00:00');
+    const day   = String(d.getDate()).padStart(2, '0');
+    const month = d.toLocaleString('en-US', { month: 'short' });
+    const year  = d.getFullYear();
+    const week  = d.toLocaleString('en-US', { weekday: 'short' });
+    return `${week} ${day} ${month} ${year}`;
   };
+
+  const formatMs = (ms, showSeconds = false) => {
+    if (!ms || ms <= 0) return '0h 0m';
+    const h = Math.floor(ms / 3600000);
+    const m = Math.floor((ms % 3600000) / 60000);
+    const s = Math.floor((ms % 60000) / 1000);
+    if (showSeconds || h === 0) return `${h}h ${m}m ${s}s`;
+    return `${h}h ${m}m`;
+  };
+
+  // ── CSV Export ────────────────────────────────────────────
+  const exportCSV = () => {
+    if (grouped.length === 0) {
+      toast.error('No records to export.');
+      return;
+    }
+
+    const esc = (val) => {
+      const str = String(val ?? '—');
+      return str.includes(',') ? `"${str.replace(/"/g, '""')}"` : str;
+    };
+
+    const fmtTimeCSV = (d) => d
+      ? new Date(d).toLocaleTimeString('en-US', {
+          hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true,
+        })
+      : '—';
+
+    const fmtDateCSV = (dateStr) => {
+      const d     = new Date(dateStr + 'T00:00:00');
+      const day   = String(d.getDate()).padStart(2, '0');
+      const month = d.toLocaleString('en-US', { month: 'short' });
+      return `${day} ${month} ${d.getFullYear()}`;
+    };
+
+    const fmtDurCSV = (ms) => {
+      if (!ms || ms <= 0) return '0h 0m 0s';
+      const h = Math.floor(ms / 3600000);
+      const m = Math.floor((ms % 3600000) / 60000);
+      const s = Math.floor((ms % 60000) / 1000);
+      return `${h}h ${m}m ${s}s`;
+    };
+
+    const headers = [
+      'Employee Name',
+      'Email',
+      'Date',
+      'First Clock In',
+      'Last Clock Out',
+      'Total Duration',
+      'Status',
+    ];
+
+    const rows = grouped.map((g) => [
+      esc(g.name),
+      esc(g.email),
+      fmtDateCSV(g.date),
+      fmtTimeCSV(g.firstClockIn),
+      g.lastClockOut ? fmtTimeCSV(g.lastClockOut) : 'Active',
+      fmtDurCSV(g.totalMs),
+      g.hasActive ? 'Active' : 'Complete',
+    ].join(','));
+
+    const csv  = [headers.join(','), ...rows].join('\n');
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url  = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href  = url;
+    link.setAttribute('download', `report_${month}${selectedUser ? `_emp${selectedUser}` : ''}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+    toast.success('CSV downloaded!');
+  };
+
+  const grouped = groupByDay(records);
+
+  // Summary stats
+  const totalDays      = grouped.length;
+  const totalEmployees = [...new Set(grouped.map((g) => g.userId))].length;
+  const totalMs        = grouped.reduce((acc, g) => acc + g.totalMs, 0);
+  const activeDays     = grouped.filter((g) => g.hasActive).length;
 
   const monthLabel = new Date(month + '-01').toLocaleDateString('en-US', {
     month: 'long', year: 'numeric',
   });
-
-  const filtered = summaries.filter((s) =>
-    s.name.toLowerCase().includes(search.toLowerCase()) ||
-    s.email.toLowerCase().includes(search.toLowerCase())
-  );
-
-  // Only show employees in reports
-  const employeeFiltered = filtered.filter((s) => s.role === 'EMPLOYEE');
-
-  const totalPresent = employeeFiltered.reduce((acc, s) => acc + s.daysPresent, 0);
-  const totalHoursMs = employeeFiltered.reduce((acc, s) => acc + s.totalMs,     0);
-  const totalHours   = Math.floor(totalHoursMs / 3600000);
-  const activeUsers  = employeeFiltered.filter((s) => s.daysPresent > 0).length;
 
   return (
     <div className="min-h-screen bg-slate-950 text-white">
@@ -99,7 +216,7 @@ const AllReports = () => {
         </div>
       </nav>
 
-      <main className="p-6 max-w-6xl mx-auto">
+      <main className="p-6 max-w-7xl mx-auto">
 
         {/* Header */}
         <div className="flex items-center justify-between mb-6 flex-wrap gap-4">
@@ -110,28 +227,54 @@ const AllReports = () => {
             </button>
             <div>
               <h1 className="text-2xl font-bold">Attendance Reports</h1>
-              <p className="text-slate-400 text-sm">All employees — {monthLabel}</p>
+              <p className="text-slate-400 text-sm">
+                Daily records — {monthLabel}
+                {selectedUser && employees.find(e => e.id === parseInt(selectedUser))
+                  ? ` — ${employees.find(e => e.id === parseInt(selectedUser)).name}`
+                  : ''}
+              </p>
             </div>
           </div>
-          <div className="flex items-center gap-3">
-            <input type="month" value={month} onChange={(e) => setMonth(e.target.value)}
-              className="px-4 py-2 bg-slate-900 border border-slate-800 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
-            <button onClick={handleExport} disabled={exporting}
-              className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500
-                         disabled:opacity-50 text-white px-4 py-2 rounded-xl text-sm font-semibold transition-all">
-              <Download className="w-4 h-4" />
-              {exporting ? 'Exporting...' : 'Export CSV'}
-            </button>
+          <button onClick={exportCSV} disabled={grouped.length === 0}
+            className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500
+                       disabled:opacity-50 disabled:cursor-not-allowed
+                       text-white px-4 py-2.5 rounded-xl text-sm font-semibold
+                       transition-all shadow-lg shadow-indigo-600/20">
+            <Download className="w-4 h-4" />
+            Export CSV
+          </button>
+        </div>
+
+        {/* Filters */}
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 mb-6">
+          <div className="flex items-center gap-2 mb-4">
+            <Filter className="w-4 h-4 text-slate-400" />
+            <span className="text-sm font-medium text-slate-300">Filter Records</span>
+          </div>
+          <div className="flex flex-wrap gap-3 items-center">
+            <input type="month" value={month}
+              onChange={(e) => setMonth(e.target.value)}
+              className="px-4 py-2 bg-slate-800 border border-slate-700 rounded-xl
+                         text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+            <select value={selectedUser}
+              onChange={(e) => setSelectedUser(e.target.value)}
+              className="px-4 py-2 bg-slate-800 border border-slate-700 rounded-xl
+                         text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              <option value="">All Employees</option>
+              {employees.map((emp) => (
+                <option key={emp.id} value={emp.id}>{emp.name}</option>
+              ))}
+            </select>
           </div>
         </div>
 
-        {/* Stats */}
+        {/* Summary Cards */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
           {[
-            { label: 'Active Employees',      value: activeUsers,   color: 'text-emerald-400' },
-            { label: 'Total Attendance Days', value: totalPresent,  color: 'text-white'        },
-            { label: 'Total Hours (All)',      value: `${totalHours}h`, color: 'text-indigo-400' },
-            { label: 'Total Employees',        value: employeeFiltered.length, color: 'text-slate-300' },
+            { label: 'Total Records',    value: totalDays,      color: 'text-white'       },
+            { label: 'Employees',        value: totalEmployees, color: 'text-indigo-400'  },
+            { label: 'Total Hours',      value: formatMs(totalMs), color: 'text-emerald-400' },
+            { label: 'Still Active',     value: activeDays,     color: 'text-amber-400'   },
           ].map(({ label, value, color }) => (
             <div key={label} className="bg-slate-900 border border-slate-800 rounded-xl p-5">
               <p className="text-slate-400 text-xs mb-1">{label}</p>
@@ -140,23 +283,16 @@ const AllReports = () => {
           ))}
         </div>
 
-        {/* Search */}
-        <div className="relative mb-4">
-          <input type="text" placeholder="Search employee by name or email..."
-            value={search} onChange={(e) => setSearch(e.target.value)}
-            className="w-full px-4 py-2.5 bg-slate-900 border border-slate-800 rounded-xl
-                       text-white text-sm placeholder-slate-500
-                       focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
-          />
-        </div>
-
         {/* Table */}
         <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
           <div className="px-6 py-4 border-b border-slate-800 flex items-center gap-2">
             <TrendingUp className="w-5 h-5 text-slate-400" />
-            <h2 className="font-semibold">Employee Summary</h2>
+            <h2 className="font-semibold">Daily Records</h2>
             <span className="text-xs bg-slate-700 text-slate-300 px-2 py-0.5 rounded-full">
-              {employeeFiltered.length} employees
+              {grouped.length} records
+            </span>
+            <span className="text-xs text-slate-500 ml-2">
+              1 row per employee per day
             </span>
           </div>
 
@@ -164,55 +300,91 @@ const AllReports = () => {
             <div className="flex justify-center py-12">
               <div className="w-8 h-8 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin" />
             </div>
-          ) : employeeFiltered.length === 0 ? (
+          ) : grouped.length === 0 ? (
             <div className="text-center py-12 text-slate-500">
-              <Users className="w-10 h-10 mx-auto mb-2 opacity-30" />
-              <p>No employees found.</p>
+              <Calendar className="w-10 h-10 mx-auto mb-2 opacity-30" />
+              <p>No records found for {monthLabel}.</p>
             </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full">
                 <thead>
                   <tr className="border-b border-slate-800 text-left">
-                    {['Employee', 'Days Present', 'Total Hours', 'Avg / Day', 'Sessions', 'Earliest In', 'Latest Out'].map((h) => (
-                      <th key={h} className="px-5 py-3 text-xs font-medium text-slate-400 uppercase tracking-wider whitespace-nowrap">
+                    {[
+                      'Employee',
+                      'Date',
+                      'First Clock In',
+                      'Last Clock Out',
+                      'Total Duration',
+                      'Status',
+                    ].map((h) => (
+                      <th key={h}
+                        className="px-5 py-3 text-xs font-medium text-slate-400 uppercase tracking-wider whitespace-nowrap">
                         {h}
                       </th>
                     ))}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800">
-                  {employeeFiltered.map((s) => (
-                    <tr key={s.userId}
-                      className={`hover:bg-slate-800/50 transition-colors ${s.daysPresent === 0 ? 'opacity-40' : ''}`}
-                    >
+                  {grouped.map((g) => (
+                    <tr key={g.key}
+                      className="hover:bg-slate-800/50 transition-colors">
+
+                      {/* Employee */}
                       <td className="px-5 py-4">
                         <div className="flex items-center gap-3">
                           <div className="w-8 h-8 bg-indigo-600 rounded-full flex items-center justify-center text-sm font-bold flex-shrink-0">
-                            {s.name.charAt(0)}
+                            {g.name.charAt(0)}
                           </div>
                           <div>
-                            <p className="text-sm font-medium text-white">{s.name}</p>
-                            <p className="text-xs text-slate-400">{s.email}</p>
+                            <p className="text-sm font-medium text-white">{g.name}</p>
+                            <p className="text-xs text-slate-400">{g.email}</p>
                           </div>
                         </div>
                       </td>
-                      <td className="px-5 py-4 text-sm font-semibold text-emerald-400">{s.daysPresent}</td>
-                      <td className="px-5 py-4 text-sm font-semibold text-white">{s.totalWorked.hours}h {s.totalWorked.minutes}m</td>
-                      <td className="px-5 py-4 text-sm text-slate-300">{s.avgPerDay.hours}h {s.avgPerDay.minutes}m</td>
-                      <td className="px-5 py-4 text-sm text-slate-300">{s.totalSessions}</td>
-                      <td className="px-5 py-4 text-sm text-slate-300">
-                        <div className="flex items-center gap-1">
-                          <Clock className="w-3 h-3 text-slate-500" />
-                          {s.earliestClockIn}
-                        </div>
+
+                      {/* Date */}
+                      <td className="px-5 py-4 text-sm text-slate-300 whitespace-nowrap">
+                        {formatDate(g.date)}
                       </td>
-                      <td className="px-5 py-4 text-sm text-slate-300">
-                        <div className="flex items-center gap-1">
-                          <Clock className="w-3 h-3 text-slate-500" />
-                          {s.latestClockOut}
-                        </div>
+
+                      {/* First Clock In */}
+                      <td className="px-5 py-4 text-sm font-medium text-emerald-400 whitespace-nowrap">
+                        🟢 {formatTime(g.firstClockIn)}
                       </td>
+
+                      {/* Last Clock Out */}
+                      <td className="px-5 py-4 text-sm text-slate-300 whitespace-nowrap">
+                        {g.hasActive
+                          ? <span className="text-amber-400">🟡 Active</span>
+                          : g.lastClockOut
+                            ? `🔴 ${formatTime(g.lastClockOut)}`
+                            : '—'}
+                      </td>
+
+                      {/* Total Duration */}
+                      <td className="px-5 py-4">
+                        <span className={`text-sm font-bold
+                          ${g.totalMs > 0 ? 'text-white' : 'text-slate-500'}`}>
+                          {g.hasActive && g.totalMs === 0
+                            ? <span className="text-amber-400 text-xs font-normal">In progress</span>
+                            : formatMs(g.totalMs, true)}
+                        </span>
+                      </td>
+
+                      {/* Status */}
+                      <td className="px-5 py-4">
+                        {g.hasActive ? (
+                          <span className="inline-flex items-center gap-1 text-xs bg-amber-500/20 text-amber-400 border border-amber-500/30 px-2.5 py-1 rounded-full">
+                            Active
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-xs bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-1 rounded-full">
+                            Complete
+                          </span>
+                        )}
+                      </td>
+
                     </tr>
                   ))}
                 </tbody>
@@ -220,6 +392,7 @@ const AllReports = () => {
             </div>
           )}
         </div>
+
       </main>
     </div>
   );
