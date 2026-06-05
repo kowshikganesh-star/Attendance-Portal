@@ -384,16 +384,20 @@ const AllAttendanceHistory = () => {
                         🟢 {formatTime(g.firstClockIn)}
                       </div>
 
-                      {/* Last Out */}
+                      {/* Last Out — show Active if still open ✅ */}
                       <div className="text-sm text-slate-300 w-24">
-                        {g.lastClockOut
-                          ? `🔴 ${formatTime(g.lastClockOut)}`
-                          : '🟡 Active'}
+                        {g.hasActive
+                          ? '🟡 Active'
+                          : g.lastClockOut
+                            ? `🔴 ${formatTime(g.lastClockOut)}`
+                            : '—'}
                       </div>
 
-                      {/* Total Hours — gap excluded ✅ */}
+                      {/* Total Hours — active sessions show In Progress ✅ */}
                       <div className="text-sm font-bold text-white w-20">
-                        {formatMs(g.totalMs)}
+                        {g.hasActive && g.totalMs === 0
+                          ? <span className="text-amber-400 text-xs">In progress</span>
+                          : formatMs(g.totalMs)}
                       </div>
 
                       {/* Sessions count */}
