@@ -206,15 +206,26 @@ const AllAttendanceHistory = () => {
       return;
     }
 
+    // Format time as 09:18:00 AM
     const fmtTime = (d) => d
-      ? new Date(d).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true })
+      ? new Date(d).toLocaleTimeString('en-US', {
+          hour:   '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+          hour12: true,
+        })
       : '—';
 
-    const fmtDate = (d) =>
-      new Date(d + 'T00:00:00').toLocaleDateString('en-US', {
-        weekday: 'short', year: 'numeric', month: 'short', day: 'numeric',
-      });
+    // Format date WITHOUT commas → 05 Jun 2026
+    const fmtDate = (dateStr) => {
+      const d = new Date(dateStr + 'T00:00:00');
+      const day   = String(d.getDate()).padStart(2, '0');
+      const month = d.toLocaleString('en-US', { month: 'short' });
+      const year  = d.getFullYear();
+      return `${day} ${month} ${year}`;
+    };
 
+    // Format duration with seconds
     const fmtDuration = (ms) => {
       if (!ms || ms < 0) return '0h 0m 0s';
       const h = Math.floor(ms / 3600000);
@@ -223,59 +234,53 @@ const AllAttendanceHistory = () => {
       return `${h}h ${m}m ${s}s`;
     };
 
-    // Headers
+    // Escape field (wrap in quotes if has comma)
+    const esc = (val) => {
+      const str = String(val ?? '—');
+      return str.includes(',') ? `"${str.replace(/"/g, '""')}"` : str;
+    };
+
+    // Headers — simple and clean
     const headers = [
       'Employee Name',
       'Email',
       'Date',
-      'Session #',
       'Clock In',
       'Clock Out',
       'Duration',
       'Location',
-      'Day Total Worked',
-      'Day Status',
     ];
 
     const rows = [];
 
-    // Loop through grouped data
+    // One row per session per employee
     grouped.forEach((g) => {
-      // Sort sessions by clock in
       const sortedSessions = [...g.sessions].sort(
         (a, b) => new Date(a.clockIn) - new Date(b.clockIn)
       );
 
-      sortedSessions.forEach((session, idx) => {
+      sortedSessions.forEach((session) => {
         const sessionMs = session.clockOut
           ? new Date(session.clockOut) - new Date(session.clockIn)
           : null;
 
-        // Wrap location in quotes to handle commas
-        const location = session.location
-          ? `"${session.location.replace(/"/g, '""')}"`
-          : '—';
-
         rows.push([
-          g.user.name,
-          g.user.email,
+          esc(g.user.name),
+          esc(g.user.email),
           fmtDate(g.date),
-          idx + 1,
           fmtTime(session.clockIn),
           session.clockOut ? fmtTime(session.clockOut) : 'Active',
           sessionMs !== null ? fmtDuration(sessionMs) : 'Active',
-          location,
-          fmtDuration(g.totalMs),
-          g.hasActive ? 'Active' : 'Complete',
+          esc(session.location || '—'),
         ].join(','));
       });
     });
 
-    const csvContent  = [headers.join(','), ...rows].join('\n');
-    const blob        = new Blob([csvContent], { type: 'text/csv' });
-    const url         = window.URL.createObjectURL(blob);
-    const link        = document.createElement('a');
-    const fileName    = filterType === 'month'
+    const csvContent = [headers.join(','), ...rows].join('\n');
+    const blob       = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url        = window.URL.createObjectURL(blob);
+    const link       = document.createElement('a');
+    const fileName   = filterType === 'month'
       ? `attendance_${month}.csv`
       : `attendance_${startDate}_to_${endDate}.csv`;
 
