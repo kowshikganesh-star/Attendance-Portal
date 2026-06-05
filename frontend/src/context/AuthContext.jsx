@@ -5,6 +5,7 @@ import axios from 'axios';
 const AuthContext = createContext(null);
 const API = import.meta.env.VITE_API_URL;
 
+// ── Geolocation helper ────────────────────────────────────
 const getLocation = () =>
   new Promise((resolve) => {
     if (!navigator.geolocation) { resolve(null); return; }
@@ -43,7 +44,9 @@ export const AuthProvider = ({ children }) => {
       delete axios.defaults.headers.common['Authorization'];
       return;
     }
+
     axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+
     axios.get(`${API}/auth/me`)
       .then(({ data }) => setUser(data.user))
       .catch(() => {
@@ -53,9 +56,10 @@ export const AuthProvider = ({ children }) => {
         delete axios.defaults.headers.common['Authorization'];
       })
       .finally(() => setLoading(false));
+
   }, [token]);
 
-  // ── Heartbeat every 4 mins ────────────────────────────────
+  // ── Heartbeat every 4 mins on ALL pages ───────────────────
   useEffect(() => {
     if (!user || user.role !== 'EMPLOYEE' || !token) {
       if (heartbeatRef.current) {
@@ -68,7 +72,9 @@ export const AuthProvider = ({ children }) => {
     const sendHeartbeat = async () => {
       try {
         await axios.post(`${API}/attendance/heartbeat`);
-      } catch {}
+      } catch {
+        // Silent fail
+      }
     };
 
     sendHeartbeat();
@@ -82,6 +88,74 @@ export const AuthProvider = ({ children }) => {
     };
   }, [user, token]);
 
+  // ── sendBeacon on tab close — works on ALL pages ─────────
+  useEffect(() => {
+    if (!user || user.role !== 'EMPLOYEE' || !token) return;
+
+    const handleBeforeUnload = () => {
+      const savedToken = sessionStorage.getItem('token');
+      if (!savedToken) return;
+      navigator.sendBeacon(
+        `${API}/auth/logout`,
+        new Blob(
+          [JSON.stringify({ token: savedToken })],
+          { type: 'application/json' }
+        )
+      );
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+
+  }, [user, token]);
+
+  // ── Page Visibility — screen sleep/wake handler ───────────
+  useEffect(() => {
+    if (!user || user.role !== 'EMPLOYEE' || !token) return;
+
+    const handleVisibilityChange = async () => {
+      if (document.visibilityState === 'hidden') {
+        if (heartbeatRef.current) {
+          clearInterval(heartbeatRef.current);
+          heartbeatRef.current = null;
+        }
+      } else if (document.visibilityState === 'visible') {
+        try {
+          const { data } = await axios.get(`${API}/attendance/today`);
+
+          if (!data.isClockedIn) {
+            const locationData = await getLocation();
+            await axios.post(`${API}/attendance/clock-in`, {
+              ...(locationData && {
+                latitude:  locationData.latitude,
+                longitude: locationData.longitude,
+                location:  locationData.location,
+              }),
+            });
+          }
+
+          if (!heartbeatRef.current) {
+            const sendHeartbeat = async () => {
+              try {
+                await axios.post(`${API}/attendance/heartbeat`);
+              } catch {
+                // Silent fail
+              }
+            };
+            sendHeartbeat();
+            heartbeatRef.current = setInterval(sendHeartbeat, 4 * 60 * 1000);
+          }
+        } catch {
+          // Silent fail
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+
+  }, [user, token]);
+
   // ── Login with location ───────────────────────────────────
   const login = async (email, password, locationData = null) => {
     const payload = {
@@ -93,7 +167,9 @@ export const AuthProvider = ({ children }) => {
         location:  locationData.location,
       }),
     };
+
     const { data } = await axios.post(`${API}/auth/login`, payload);
+
     sessionStorage.setItem('token', data.token);
     axios.defaults.headers.common['Authorization'] = `Bearer ${data.token}`;
     setToken(data.token);
@@ -109,7 +185,9 @@ export const AuthProvider = ({ children }) => {
     }
     try {
       await axios.post(`${API}/auth/logout`);
-    } catch {}
+    } catch {
+      // Continue logout even if API fails
+    }
     sessionStorage.removeItem('token');
     setToken(null);
     setUser(null);
@@ -123,6 +201,7 @@ export const AuthProvider = ({ children }) => {
   );
 };
 
+// eslint-disable-next-line react-refresh/only-export-components
 export const useAuth = () => {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error('useAuth must be used inside AuthProvider');
