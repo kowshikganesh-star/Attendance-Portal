@@ -42,21 +42,52 @@ const MyReport = () => {
 
   useEffect(() => { fetchReport(); }, [fetchReport]);
 
-  const handleExport = async () => {
+  const handleExport = () => {
+    if (!data || !data.dailyBreakdown.length) {
+      toast.error('No data to export.');
+      return;
+    }
     setExporting(true);
+
     try {
-      const response = await axios.get(`${API}/reports/export`, {
-        params:       { month },
-        responseType: 'blob',
-        headers:      { Authorization: `Bearer ${token}` },
-      });
-      const url  = window.URL.createObjectURL(new Blob([response.data]));
+      const esc = (val) => {
+        const str = String(val ?? '—');
+        return str.includes(',') ? `"${str.replace(/"/g, '""')}"` : str;
+      };
+
+      const fmtDateCSV = (d) => {
+        const dt    = new Date(d);
+        const day   = String(dt.getDate()).padStart(2, '0');
+        const month = dt.toLocaleString('en-US', { month: 'short' });
+        return `${day} ${month} ${dt.getFullYear()}`;
+      };
+
+      const headers = [
+        'Date',
+        'Hours Worked',
+        'Sessions',
+        'Location',
+        'Status',
+      ];
+
+      const rows = data.dailyBreakdown.map((row) => [
+        fmtDateCSV(row.date + 'T00:00:00'),
+        `${row.hoursWorked}h ${row.minutes}m ${row.seconds ?? 0}s`,
+        row.sessions,
+        esc(row.location || '—'),
+        row.isComplete ? 'Complete' : 'Incomplete',
+      ].join(','));
+
+      const csv  = [headers.join(','), ...rows].join('\n');
+      const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+      const url  = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href  = url;
-      link.setAttribute('download', `my_attendance_${month}.csv`);
+      link.setAttribute('download', `my_report_${month}.csv`);
       document.body.appendChild(link);
       link.click();
       link.remove();
+      window.URL.revokeObjectURL(url);
       toast.success('CSV downloaded!');
     } catch {
       toast.error('Export failed.');
@@ -191,8 +222,8 @@ const MyReport = () => {
                   <table className="w-full">
                     <thead>
                       <tr className="border-b border-slate-800 text-left">
-                        {['Date', 'Sessions', 'Hours Worked', 'Status'].map((h) => (
-                          <th key={h} className="px-6 py-3 text-xs font-medium text-slate-400 uppercase tracking-wider">
+                        {['Date', 'Sessions', 'Hours Worked', 'Location', 'Status'].map((h) => (
+                          <th key={h} className="px-6 py-3 text-xs font-medium text-slate-400 uppercase tracking-wider whitespace-nowrap">
                             {h}
                           </th>
                         ))}
@@ -201,12 +232,20 @@ const MyReport = () => {
                     <tbody className="divide-y divide-slate-800">
                       {data.dailyBreakdown.map((row) => (
                         <tr key={row.date} className="hover:bg-slate-800/50 transition-colors">
-                          <td className="px-6 py-4 text-sm font-medium text-white">
+                          <td className="px-6 py-4 text-sm font-medium text-white whitespace-nowrap">
                             {formatDate(row.date + 'T00:00:00')}
                           </td>
                           <td className="px-6 py-4 text-sm text-slate-300">{row.sessions}</td>
-                          <td className="px-6 py-4 text-sm font-semibold text-white">
-                            {row.hoursWorked}h {row.minutes}m
+                          <td className="px-6 py-4 text-sm font-semibold text-white whitespace-nowrap">
+                            {row.hoursWorked}h {row.minutes}m {row.seconds ?? 0}s
+                          </td>
+                          {/* Location — first clock-in of the day */}
+                          <td className="px-6 py-4 text-sm text-slate-400 max-w-xs">
+                            {row.location
+                              ? <span className="truncate block max-w-48" title={row.location}>
+                                  📍 {row.location}
+                                </span>
+                              : <span className="text-slate-600">—</span>}
                           </td>
                           <td className="px-6 py-4">
                             {row.isComplete ? (
