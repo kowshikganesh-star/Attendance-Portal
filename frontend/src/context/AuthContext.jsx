@@ -120,36 +120,47 @@ export const AuthProvider = ({ children }) => {
   useEffect(() => {
     if (!user || user.role !== 'EMPLOYEE' || !token) return;
 
-    // Shared clock-in check — used in multiple places
+    // Shared clock-in check with retry for slow backend
     const checkAndClockIn = async () => {
-      try {
-        const { data } = await axios.get(`${API}/attendance/today`);
+      // Try up to 3 times with increasing delays
+      // Handles Render cold start (backend waking up)
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const { data } = await axios.get(`${API}/attendance/today`);
 
-        if (!data.isClockedIn) {
-          const locationData = await getLocation();
-          await axios.post(`${API}/attendance/clock-in`, {
-            ...(locationData && {
-              latitude:  locationData.latitude,
-              longitude: locationData.longitude,
-              location:  locationData.location,
-            }),
-          });
-        }
+          if (!data.isClockedIn) {
+            const locationData = await getLocation();
+            await axios.post(`${API}/attendance/clock-in`, {
+              ...(locationData && {
+                latitude:  locationData.latitude,
+                longitude: locationData.longitude,
+                location:  locationData.location,
+              }),
+            });
+          }
 
-        // Restart heartbeat if stopped
-        if (!heartbeatRef.current) {
-          const sendHeartbeat = async () => {
-            try {
-              await axios.post(`${API}/attendance/heartbeat`);
-            } catch {
-              // Silent fail
-            }
-          };
-          sendHeartbeat();
-          heartbeatRef.current = setInterval(sendHeartbeat, 4 * 60 * 1000);
+          // Restart heartbeat if stopped
+          if (!heartbeatRef.current) {
+            const sendHeartbeat = async () => {
+              try {
+                await axios.post(`${API}/attendance/heartbeat`);
+              } catch {
+                // Silent fail
+              }
+            };
+            sendHeartbeat();
+            heartbeatRef.current = setInterval(sendHeartbeat, 4 * 60 * 1000);
+          }
+
+          return; // ✅ Success — stop retrying
+
+        } catch {
+          if (attempt < 3) {
+            // Wait before retry: 2s, then 4s
+            await new Promise((r) => setTimeout(r, attempt * 2000));
+          }
+          // Silent fail on final attempt
         }
-      } catch {
-        // Silent fail
       }
     };
 
