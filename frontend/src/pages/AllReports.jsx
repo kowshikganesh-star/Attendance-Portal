@@ -22,22 +22,24 @@ const groupByDay = (records) => {
     if (!grouped[key]) {
       grouped[key] = {
         key,
-        userId:       record.user.id,
-        name:         record.user.name,
-        email:        record.user.email,
+        userId:        record.user.id,
+        name:          record.user.name,
+        email:         record.user.email,
         date,
-        firstClockIn: record.clockIn,
-        lastClockOut: record.clockOut || null,
-        totalMs:      0,
-        hasActive:    false,
+        firstClockIn:  record.clockIn,
+        lastClockOut:  record.clockOut || null,
+        firstLocation: record.location || null, // ← first login location
+        totalMs:       0,
+        hasActive:     false,
       };
     }
 
     const g = grouped[key];
 
-    // Track first clock in
+    // Track first clock in + its location
     if (new Date(record.clockIn) < new Date(g.firstClockIn)) {
-      g.firstClockIn = record.clockIn;
+      g.firstClockIn  = record.clockIn;
+      g.firstLocation = record.location || null;
     }
 
     // Track last clock out
@@ -45,7 +47,6 @@ const groupByDay = (records) => {
       if (!g.lastClockOut || new Date(record.clockOut) > new Date(g.lastClockOut)) {
         g.lastClockOut = record.clockOut;
       }
-      // Add actual session duration only (no gap time)
       g.totalMs += new Date(record.clockOut) - new Date(record.clockIn);
     } else {
       g.hasActive = true;
@@ -154,6 +155,7 @@ const AllReports = () => {
       'First Clock In',
       'Last Clock Out',
       'Total Duration',
+      'Location',
       'Status',
     ];
 
@@ -164,6 +166,7 @@ const AllReports = () => {
       fmtTimeCSV(g.firstClockIn),
       g.lastClockOut ? fmtTimeCSV(g.lastClockOut) : 'Active',
       fmtDurCSV(g.totalMs),
+      esc(g.firstLocation || '—'),
       g.hasActive ? 'Active' : 'Complete',
     ].join(','));
 
@@ -316,6 +319,7 @@ const AllReports = () => {
                       'First Clock In',
                       'Last Clock Out',
                       'Total Duration',
+                      'Location',
                       'Status',
                     ].map((h) => (
                       <th key={h}
@@ -370,6 +374,15 @@ const AllReports = () => {
                             ? <span className="text-amber-400 text-xs font-normal">In progress</span>
                             : formatMs(g.totalMs, true)}
                         </span>
+                      </td>
+
+                      {/* Location */}
+                      <td className="px-5 py-4 text-sm text-slate-400 max-w-xs">
+                        {g.firstLocation
+                          ? <span className="truncate block max-w-48" title={g.firstLocation}>
+                              📍 {g.firstLocation}
+                            </span>
+                          : <span className="text-slate-600">—</span>}
                       </td>
 
                       {/* Status */}
