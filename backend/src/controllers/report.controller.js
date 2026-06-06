@@ -39,15 +39,54 @@ const buildSummary = (user, records) => {
   const avgHours     = Math.floor(avgMsPerDay / 3600000);
   const avgMinutes   = Math.floor((avgMsPerDay % 3600000) / 60000);
 
-  const clockIns  = records.map((r) => new Date(r.clockIn));
-  const clockOuts = records.filter((r) => r.clockOut).map((r) => new Date(r.clockOut));
-
-  const earliestIn = clockIns.length  ? new Date(Math.min(...clockIns))  : null;
-  const latestOut  = clockOuts.length ? new Date(Math.max(...clockOuts)) : null;
-
   const incompleteDays = dates.filter((d) =>
     byDate[d].some((r) => !r.clockOut)
   ).length;
+
+  // --- Session Behaviour ---
+
+  // 1. Avg session length in minutes (only completed sessions)
+  const completedSessions = records.filter((r) => r.clockOut);
+  const avgSessionMins = completedSessions.length
+    ? Math.round(
+        completedSessions.reduce(
+          (acc, r) => acc + (new Date(r.clockOut) - new Date(r.clockIn)),
+          0
+        ) / completedSessions.length / 60000
+      )
+    : 0;
+
+  // 2. Avg sessions per day
+  const avgSessionsPerDay = daysPresent > 0
+    ? parseFloat((records.length / daysPresent).toFixed(1))
+    : 0;
+
+  // 3. Avg first clock-in time across all days
+  const firstClockIns = dates.map((d) => {
+    const sorted = [...byDate[d]].sort(
+      (a, b) => new Date(a.clockIn) - new Date(b.clockIn)
+    );
+    return new Date(sorted[0].clockIn);
+  });
+
+  let avgFirstClockIn = '—';
+  if (firstClockIns.length) {
+    // Average the time-of-day portion only (ms since midnight)
+    const avgMs =
+      firstClockIns.reduce((acc, d) => {
+        const msSinceMidnight =
+          d.getHours() * 3600000 +
+          d.getMinutes() * 60000 +
+          d.getSeconds() * 1000;
+        return acc + msSinceMidnight;
+      }, 0) / firstClockIns.length;
+
+    const h = Math.floor(avgMs / 3600000);
+    const m = Math.floor((avgMs % 3600000) / 60000);
+    const period = h >= 12 ? 'PM' : 'AM';
+    const hour12 = h % 12 === 0 ? 12 : h % 12;
+    avgFirstClockIn = `${String(hour12).padStart(2, '0')}:${String(m).padStart(2, '0')} ${period}`;
+  }
 
   return {
     userId:        user.id,
@@ -59,8 +98,9 @@ const buildSummary = (user, records) => {
     totalSessions: records.length,
     totalWorked:   { hours: totalHours,  minutes: totalMinutes  },
     avgPerDay:     { hours: avgHours,    minutes: avgMinutes    },
-    earliestClockIn:  earliestIn  ? earliestIn.toLocaleTimeString('en-US',  { hour: '2-digit', minute: '2-digit', hour12: true }) : '—',
-    latestClockOut:   latestOut   ? latestOut.toLocaleTimeString('en-US',   { hour: '2-digit', minute: '2-digit', hour12: true }) : '—',
+    avgSessionMins,
+    avgSessionsPerDay,
+    avgFirstClockIn,
     totalMs,
   };
 };
@@ -94,7 +134,6 @@ export const getMySummary = async (req, res, next) => {
       const sortedByTime = [...sessions].sort(
         (a, b) => new Date(a.clockIn) - new Date(b.clockIn)
       );
-      // First clock-in location for the day
       const firstLocation = sortedByTime.find((s) => s.location)?.location || null;
 
       return {
