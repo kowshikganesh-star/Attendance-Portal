@@ -4,7 +4,7 @@ import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import toast, { Toaster } from 'react-hot-toast';
-import { Clock, LogOut, ArrowLeft, Download, Calendar, CheckCircle, AlertCircle, TrendingUp } from 'lucide-react';
+import { Clock, LogOut, ArrowLeft, Download, Calendar, CheckCircle, AlertCircle, Activity } from 'lucide-react';
 
 const API = import.meta.env.VITE_API_URL;
 
@@ -62,13 +62,7 @@ const MyReport = () => {
         return `${day} ${month} ${dt.getFullYear()}`;
       };
 
-      const headers = [
-        'Date',
-        'Hours Worked',
-        'Sessions',
-        'Location',
-        'Status',
-      ];
+      const headers = ['Date', 'Hours Worked', 'Sessions', 'Location', 'Status'];
 
       const rows = data.dailyBreakdown.map((row) => [
         fmtDateCSV(row.date + 'T00:00:00'),
@@ -157,44 +151,60 @@ const MyReport = () => {
           </div>
         ) : data ? (
           <>
+            {/* Stat Cards */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-              <StatCard label="Days Present"  value={data.summary.daysPresent} color="text-emerald-400" />
-              <StatCard label="Total Hours"   value={`${data.summary.totalWorked.hours}h ${data.summary.totalWorked.minutes}m`} color="text-indigo-400" />
-              <StatCard label="Avg Hours / Day" value={`${data.summary.avgPerDay.hours}h ${data.summary.avgPerDay.minutes}m`} color="text-violet-400" />
-              <StatCard label="Total Sessions" value={data.summary.totalSessions}
+              <StatCard label="Days Present"    value={data.summary.daysPresent}                                                              color="text-emerald-400" />
+              <StatCard label="Total Hours"     value={`${data.summary.totalWorked.hours}h ${data.summary.totalWorked.minutes}m`}             color="text-indigo-400" />
+              <StatCard label="Avg Hours / Day" value={`${data.summary.avgPerDay.hours}h ${data.summary.avgPerDay.minutes}m`}                 color="text-violet-400" />
+              <StatCard label="Total Sessions"  value={data.summary.totalSessions}
                 sub={`${data.summary.incompleteDays} incomplete days`} color="text-white" />
             </div>
 
+            {/* Session Behaviour + Attendance Health */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+
+              {/* Session Behaviour — replaces Time Patterns */}
               <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
-                <div className="flex items-center gap-2 mb-3">
-                  <TrendingUp className="w-4 h-4 text-slate-400" />
-                  <p className="text-sm font-medium text-slate-300">Time Patterns</p>
+                <div className="flex items-center gap-2 mb-4">
+                  <Activity className="w-4 h-4 text-slate-400" />
+                  <p className="text-sm font-medium text-slate-300">Session Behaviour</p>
                 </div>
-                <div className="space-y-2">
-                  <div className="flex justify-between text-sm">
-                    <span className="text-slate-400">Earliest Clock In</span>
-                    <span className="text-white font-medium">{data.summary.earliestClockIn}</span>
+                <div className="space-y-3">
+                  <div className="flex justify-between text-sm items-center">
+                    <span className="text-slate-400">Avg session length</span>
+                    <span className="text-emerald-400 font-semibold">
+                      {data.summary.avgSessionMins ?? 0}m
+                    </span>
                   </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-slate-400">Latest Clock Out</span>
-                    <span className="text-white font-medium">{data.summary.latestClockOut}</span>
+                  <div className="flex justify-between text-sm items-center">
+                    <span className="text-slate-400">Avg sessions / day</span>
+                    <span className="text-amber-400 font-semibold">
+                      {data.summary.avgSessionsPerDay ?? 0}
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-sm items-center">
+                    <span className="text-slate-400">Avg first clock-in</span>
+                    <span className="text-violet-400 font-semibold">
+                      {data.summary.avgFirstClockIn ?? '—'}
+                    </span>
                   </div>
                 </div>
               </div>
+
+              {/* Attendance Health — unchanged */}
               <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
-                <div className="flex items-center gap-2 mb-3">
+                <div className="flex items-center gap-2 mb-4">
                   <Calendar className="w-4 h-4 text-slate-400" />
                   <p className="text-sm font-medium text-slate-300">Attendance Health</p>
                 </div>
-                <div className="space-y-2">
-                  <div className="flex justify-between text-sm">
+                <div className="space-y-3">
+                  <div className="flex justify-between text-sm items-center">
                     <span className="text-slate-400">Complete Days</span>
                     <span className="text-emerald-400 font-medium">
                       {data.summary.daysPresent - data.summary.incompleteDays}
                     </span>
                   </div>
-                  <div className="flex justify-between text-sm">
+                  <div className="flex justify-between text-sm items-center">
                     <span className="text-slate-400">Incomplete Days</span>
                     <span className="text-amber-400 font-medium">{data.summary.incompleteDays}</span>
                   </div>
@@ -239,7 +249,6 @@ const MyReport = () => {
                           <td className="px-6 py-4 text-sm font-semibold text-white whitespace-nowrap">
                             {row.hoursWorked}h {row.minutes}m {row.seconds ?? 0}s
                           </td>
-                          {/* Location — first clock-in of the day */}
                           <td className="px-6 py-4 text-sm text-slate-400 max-w-xs">
                             {row.location
                               ? <span className="truncate block max-w-48" title={row.location}>
