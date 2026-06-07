@@ -38,12 +38,6 @@ export const AuthProvider = ({ children }) => {
   const missCountRef          = useRef(0);     // consecutive heartbeat failures
   const clockStoppedRef       = useRef(false); // true when auto-clocked-out due to misses
 
-  // ── Clear refresh flag on every fresh page load ───────────
-  // Used by beforeunload to distinguish refresh vs true tab close
-  useEffect(() => {
-    sessionStorage.removeItem('_wasUnload');
-  }, []);
-
   // ── Restore session on load ───────────────────────────────
   useEffect(() => {
     if (!token) {
@@ -69,12 +63,12 @@ export const AuthProvider = ({ children }) => {
 
   // ── Heartbeat every 4 mins ────────────────────────────────
   // Runs continuously — never paused on tab switch or app switch.
-  // This keeps backend updatedAt fresh so the 10-min cron doesn't
-  // clock out an employee who is simply working in another tab.
+  // Keeps backend updatedAt fresh so 10-min cron doesn't clock out
+  // an employee who is simply working in another tab/app.
   //
   // 2 consecutive failures = screen asleep or offline → auto clock-out.
   // Browser fully suspends JS during screen sleep so heartbeats
-  // genuinely fail, miss counter accumulates, and clock-out triggers.
+  // genuinely fail, miss counter accumulates, clock-out triggers.
   useEffect(() => {
     if (!user || user.role !== 'EMPLOYEE' || !token) {
       if (heartbeatRef.current) {
@@ -90,7 +84,7 @@ export const AuthProvider = ({ children }) => {
     const sendHeartbeat = async () => {
       try {
         await axios.post(`${API}/attendance/heartbeat`);
-        missCountRef.current = 0; // reset on success
+        missCountRef.current = 0;
       } catch {
         missCountRef.current += 1;
 
@@ -120,9 +114,10 @@ export const AuthProvider = ({ children }) => {
   }, [user, token]);
 
   // ── Visibility change + clock-in check ───────────────────
-  // No longer stops/starts heartbeat on hidden (that was causing
-  // sessions to end on tab switch). Now only used to re-check
-  // clock-in when screen wakes up after a sleep clock-out.
+  // Heartbeat is NOT stopped on hidden — it runs in the background
+  // to keep the session alive during tab/app switches.
+  // visibilitychange is only used to re-check clock-in on screen wake,
+  // in case the backend cron clocked the employee out during sleep.
   useEffect(() => {
     if (!user || user.role !== 'EMPLOYEE' || !token) return;
 
@@ -157,9 +152,9 @@ export const AuthProvider = ({ children }) => {
 
     const handleVisibilityChange = async () => {
       if (document.visibilityState === 'visible') {
-        // Screen woke up or tab came back into focus.
+        // Screen woke or tab came back — re-check clock-in.
         // If clockStoppedRef = true, employee was auto-clocked-out
-        // due to 2 missed heartbeats — do NOT silently restart session.
+        // due to 2 missed heartbeats — do NOT silently restart.
         // They must re-login intentionally.
         if (!clockStoppedRef.current) {
           await checkAndClockIn();
@@ -173,48 +168,30 @@ export const AuthProvider = ({ children }) => {
 
   }, [user, token]);
 
-  // ── Tab close → beacon logout + clock-out ────────────────
-  // sendBeacon is used because fetch/axios are cancelled by the browser
-  // during unload. sendBeacon guarantees delivery on true tab close.
+  // ── Tab close → beacon logout ─────────────────────────────
+  // sendBeacon fires on EVERY unload (refresh + tab close).
+  // We do NOT try to detect refresh here — it was unreliable on Vercel SPA.
   //
-  // Refresh detection uses a sessionStorage round-trip because
-  // performance.navigation.type is unreliable on Vercel SPAs:
-  //   Every page load clears '_wasUnload' (top useEffect above)
-  //   beforeunload sets '_wasUnload' = '1'
-  //   If page reloads (refresh) → next load clears it → flag gone
-  //   If tab truly closes → flag set but irrelevant (tab is gone)
-  //   Combined with modern + legacy Performance API for extra reliability
+  // Instead the backend logout route checks if token came from
+  // the body (sendBeacon = tab close or refresh) and SKIPS clock-out.
+  // Clock-out only happens via:
+  //   1. Logout button (explicit, uses Authorization header)
+  //   2. 2-miss heartbeat failure (screen sleep)
+  //   3. Backend 10-min autoClockOutInactive cron (safety net)
+  //
+  // This means refresh never causes a new session ✅
+  // Tab close ends session within 10 mins via cron ✅
   useEffect(() => {
     if (!user || !token) return;
 
     const handleBeforeUnload = () => {
-      // Method 1: modern Performance Navigation Timing API
-      const navEntry       = performance?.getEntriesByType?.('navigation')?.[0];
-      const isReloadModern = navEntry?.type === 'reload';
-
-      // Method 2: legacy performance.navigation
-      const isReloadLegacy = performance?.navigation?.type === 1;
-
-      // Method 3: sessionStorage flag — '_wasUnload' still set means
-      // a previous beforeunload fired but no new page load cleared it
-      // (rapid double-unload edge case)
-      const alreadyFlagged = sessionStorage.getItem('_wasUnload') === '1';
-
-      const isRefresh = isReloadModern || isReloadLegacy || alreadyFlagged;
-
-      // Always set the flag so next load can detect it was a refresh
-      sessionStorage.setItem('_wasUnload', '1');
-
-      if (isRefresh) return; // ✅ refresh — keep session alive, skip beacon
-
-      // True tab/window close — stop heartbeat and beacon logout
       if (heartbeatRef.current) {
         clearInterval(heartbeatRef.current);
         heartbeatRef.current = null;
       }
 
-      // sendBeacon cannot set Authorization header.
-      // Token goes in body — backend reads req.body.token as fallback.
+      // Token in body signals sendBeacon (refresh or tab close).
+      // Backend skips clock-out for these — only JWT is invalidated.
       const blob = new Blob(
         [JSON.stringify({ token })],
         { type: 'application/json' }
@@ -249,6 +226,8 @@ export const AuthProvider = ({ children }) => {
   };
 
   // ── Logout with auto clock-out ────────────────────────────
+  // Uses Authorization header → backend detects this as explicit logout
+  // and performs clock-out.
   const logout = async () => {
     if (heartbeatRef.current) {
       clearInterval(heartbeatRef.current);
@@ -260,7 +239,6 @@ export const AuthProvider = ({ children }) => {
       // Continue logout even if API fails
     }
     sessionStorage.removeItem('token');
-    sessionStorage.removeItem('_wasUnload');
     setToken(null);
     setUser(null);
     delete axios.defaults.headers.common['Authorization'];
