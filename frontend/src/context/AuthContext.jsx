@@ -35,23 +35,13 @@ export const AuthProvider = ({ children }) => {
   const [token,   setToken]   = useState(() => sessionStorage.getItem('token'));
   const [loading, setLoading] = useState(true);
   const heartbeatRef          = useRef(null);
-  const missCountRef          = useRef(0);
-  const clockStoppedRef       = useRef(false);
+  const missCountRef          = useRef(0);     // consecutive heartbeat failures
+  const clockStoppedRef       = useRef(false); // true when auto-clocked-out due to misses
 
-  // ── FIX 2: Mark every page load as a "fresh load" ────────
-  // On beforeunload we check this flag to detect refresh vs true close.
-  // Refresh = flag exists (set on this load, page reloading again)
-  // True close = flag exists but page never reloads (irrelevant, tab gone)
-  // The key insight: on refresh the NEW load runs this effect and removes
-  // the flag; on true close nothing removes it but we don't care.
-  // We use a module-level variable (not sessionStorage) so it's synchronous
-  // and cannot be tampered with across origins.
+  // ── Clear refresh flag on every fresh page load ───────────
+  // Used by beforeunload to distinguish refresh vs true tab close
   useEffect(() => {
-    // Set flag when this load is alive — proves page loaded successfully
-    sessionStorage.setItem('_pageLoaded', '1');
-    return () => {
-      // On React strict-mode double-invoke this cleans up, but we reset below
-    };
+    sessionStorage.removeItem('_wasUnload');
   }, []);
 
   // ── Restore session on load ───────────────────────────────
@@ -77,20 +67,14 @@ export const AuthProvider = ({ children }) => {
 
   }, [token]);
 
-  // ── Heartbeat every 4 mins — NEVER paused on tab switch ──
+  // ── Heartbeat every 4 mins ────────────────────────────────
+  // Runs continuously — never paused on tab switch or app switch.
+  // This keeps backend updatedAt fresh so the 10-min cron doesn't
+  // clock out an employee who is simply working in another tab.
   //
-  // FIX 1: Removed clearInterval from visibilitychange hidden branch.
-  // Heartbeat now runs continuously regardless of tab visibility.
-  // This keeps backend updatedAt fresh during tab switches / app switches.
-  //
-  // FIX 3: Miss counter now works because interval is never prematurely
-  // cleared. When screen truly sleeps, browser suspends JS completely,
-  // heartbeats genuinely fail, misses accumulate → clock-out triggers.
-  //
-  // Flow:
-  //   Tab switch / app switch → heartbeat keeps firing ✅ session stays open
-  //   Screen sleep (JS suspended) → heartbeats fail → 2 misses → clock-out ✅
-  //   Network drop → 1 miss (blip forgiven) → 2nd miss → clock-out ✅
+  // 2 consecutive failures = screen asleep or offline → auto clock-out.
+  // Browser fully suspends JS during screen sleep so heartbeats
+  // genuinely fail, miss counter accumulates, and clock-out triggers.
   useEffect(() => {
     if (!user || user.role !== 'EMPLOYEE' || !token) {
       if (heartbeatRef.current) {
@@ -106,21 +90,19 @@ export const AuthProvider = ({ children }) => {
     const sendHeartbeat = async () => {
       try {
         await axios.post(`${API}/attendance/heartbeat`);
-        missCountRef.current = 0; // reset on every success
+        missCountRef.current = 0; // reset on success
       } catch {
         missCountRef.current += 1;
 
         if (missCountRef.current >= 2) {
-          // 2 consecutive misses → screen asleep or genuinely offline
-          // Stop interval and clock out
+          // 2 consecutive misses → screen asleep or offline → clock out
           clearInterval(heartbeatRef.current);
           heartbeatRef.current    = null;
           clockStoppedRef.current = true;
-
           try {
             await axios.post(`${API}/attendance/clock-out`);
           } catch {
-            // Silent — backend cron will clean up via 15-min timeout
+            // Silent — backend 10-min cron handles cleanup as fallback
           }
         }
       }
@@ -137,13 +119,10 @@ export const AuthProvider = ({ children }) => {
     };
   }, [user, token]);
 
-  // ── Visibility change — clock-in check on wake only ──────
-  //
-  // We no longer stop/start heartbeat here (FIX 1).
-  // We only use visibilitychange to re-check clock-in when screen wakes,
-  // in case the backend cron clocked the employee out during sleep.
-  // If clockStoppedRef is true (2 misses), we do NOT auto re-clock-in —
-  // employee must log in again intentionally.
+  // ── Visibility change + clock-in check ───────────────────
+  // No longer stops/starts heartbeat on hidden (that was causing
+  // sessions to end on tab switch). Now only used to re-check
+  // clock-in when screen wakes up after a sleep clock-out.
   useEffect(() => {
     if (!user || user.role !== 'EMPLOYEE' || !token) return;
 
@@ -173,22 +152,20 @@ export const AuthProvider = ({ children }) => {
       }
     };
 
-    // Run immediately on mount — handles page restore after refresh
+    // Run immediately on mount — handles refresh / token restore
     checkAndClockIn();
 
     const handleVisibilityChange = async () => {
       if (document.visibilityState === 'visible') {
-        // Screen woke up — check if backend cron clocked us out during sleep
-        // Skip if clockStoppedRef = true (2-miss auto clock-out happened)
-        // Employee should re-login intentionally in that case
+        // Screen woke up or tab came back into focus.
+        // If clockStoppedRef = true, employee was auto-clocked-out
+        // due to 2 missed heartbeats — do NOT silently restart session.
+        // They must re-login intentionally.
         if (!clockStoppedRef.current) {
           await checkAndClockIn();
         }
       }
-      // ── REMOVED: no clearInterval on hidden ──────────────
-      // Previously we stopped heartbeat when tab was hidden.
-      // That caused backend to time out the session on tab switch.
-      // Now heartbeat runs in the background continuously (FIX 1).
+      // hidden → do nothing. Heartbeat keeps running in background.
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
@@ -197,80 +174,53 @@ export const AuthProvider = ({ children }) => {
   }, [user, token]);
 
   // ── Tab close → beacon logout + clock-out ────────────────
+  // sendBeacon is used because fetch/axios are cancelled by the browser
+  // during unload. sendBeacon guarantees delivery on true tab close.
   //
-  // FIX 2: Refresh detection via sessionStorage flag instead of
-  // unreliable performance.navigation.type (broken on Vercel SPAs).
-  //
-  // How it works:
-  //   Every page load sets sessionStorage '_pageLoaded' = '1'  (above)
-  //   beforeunload: remove the flag and set '_isUnloading' = '1'
-  //   If it's a REFRESH: new page load runs, sees '_isUnloading',
-  //     knows it was a refresh → removes both flags → no beacon fired
-  //   If it's a TRUE CLOSE: '_isUnloading' stays but tab is gone → irrelevant
-  //
-  // Simpler version: just check if '_pageLoaded' exists at beforeunload time.
-  // If it does → page was alive → could be refresh or close.
-  // We set a short-lived flag and check on next load.
-  // BUT: sendBeacon must fire synchronously in beforeunload.
-  //
-  // ✅ FINAL reliable approach:
-  //   On load: sessionStorage.setItem('_tabAlive', '1')
-  //   On beforeunload:
-  //     Set '_wasUnload' = '1'
-  //     Check if this is a reload via PerformanceNavigationTiming type
-  //     If not reload → fire beacon
-  //   On next load: if '_wasUnload' exists → previous was refresh, clear it
-  //
-  // Since performance.navigation.type is unreliable on SPAs, we combine it
-  // with a sessionStorage round-trip as a fallback double-check:
-  //   If EITHER method says "reload" → treat as refresh → skip beacon
+  // Refresh detection uses a sessionStorage round-trip because
+  // performance.navigation.type is unreliable on Vercel SPAs:
+  //   Every page load clears '_wasUnload' (top useEffect above)
+  //   beforeunload sets '_wasUnload' = '1'
+  //   If page reloads (refresh) → next load clears it → flag gone
+  //   If tab truly closes → flag set but irrelevant (tab is gone)
+  //   Combined with modern + legacy Performance API for extra reliability
   useEffect(() => {
     if (!user || !token) return;
 
     const handleBeforeUnload = () => {
-      // Method 1: Performance Navigation Timing API (modern, reliable in most browsers)
-      const navEntry = performance?.getEntriesByType?.('navigation')?.[0];
+      // Method 1: modern Performance Navigation Timing API
+      const navEntry       = performance?.getEntriesByType?.('navigation')?.[0];
       const isReloadModern = navEntry?.type === 'reload';
 
-      // Method 2: Legacy performance.navigation (works in older browsers)
+      // Method 2: legacy performance.navigation
       const isReloadLegacy = performance?.navigation?.type === 1;
 
-      // Method 3: sessionStorage round-trip
-      // If '_wasUnload' already exists from a PREVIOUS beforeunload that
-      // wasn't cleared by a new load, this is a rapid double-unload (edge case).
-      // Normal case: '_pageLoaded' exists = page loaded = could be refresh.
-      // We set '_wasUnload' now; next load clears it and skips clock-in restart.
+      // Method 3: sessionStorage flag — '_wasUnload' still set means
+      // a previous beforeunload fired but no new page load cleared it
+      // (rapid double-unload edge case)
       const alreadyFlagged = sessionStorage.getItem('_wasUnload') === '1';
 
       const isRefresh = isReloadModern || isReloadLegacy || alreadyFlagged;
 
-      if (isRefresh) {
-        // Refresh — do not logout, do not clock out
-        // heartbeat keeps running, session stays open
-        sessionStorage.setItem('_wasUnload', '1');
-        return;
-      }
-
-      // True close — stop heartbeat and fire beacon
+      // Always set the flag so next load can detect it was a refresh
       sessionStorage.setItem('_wasUnload', '1');
 
+      if (isRefresh) return; // ✅ refresh — keep session alive, skip beacon
+
+      // True tab/window close — stop heartbeat and beacon logout
       if (heartbeatRef.current) {
         clearInterval(heartbeatRef.current);
         heartbeatRef.current = null;
       }
 
-      // sendBeacon cannot send Authorization header.
-      // Token goes in the body — backend reads req.body.token as fallback.
+      // sendBeacon cannot set Authorization header.
+      // Token goes in body — backend reads req.body.token as fallback.
       const blob = new Blob(
         [JSON.stringify({ token })],
         { type: 'application/json' }
       );
       navigator.sendBeacon(`${API}/auth/logout`, blob);
     };
-
-    // On every fresh load, clear the unload flag from the previous load.
-    // This means the previous unload was a REFRESH (page reloaded = flag cleared).
-    sessionStorage.removeItem('_wasUnload');
 
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
