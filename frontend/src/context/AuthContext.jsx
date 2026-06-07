@@ -163,6 +163,35 @@ export const AuthProvider = ({ children }) => {
 
   }, [user, token]);
 
+  // ── Tab close → auto clock-out + logout ──────────────────
+  // Uses sendBeacon because fetch/axios are cancelled by the
+  // browser before they complete during tab/window close.
+  // sendBeacon guarantees the POST is delivered even while unloading.
+  useEffect(() => {
+    if (!user || !token) return;
+
+    const handleBeforeUnload = () => {
+      // Stop heartbeat immediately
+      if (heartbeatRef.current) {
+        clearInterval(heartbeatRef.current);
+        heartbeatRef.current = null;
+      }
+
+      // Send token in body because sendBeacon cannot set
+      // custom headers (Authorization header won't be sent).
+      // Backend must read token from body as fallback.
+      const blob = new Blob(
+        [JSON.stringify({ token })],
+        { type: 'application/json' }
+      );
+      navigator.sendBeacon(`${API}/auth/logout`, blob);
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+
+  }, [user, token]);
+
   // ── Login with location ───────────────────────────────────
   const login = async (email, password, locationData = null) => {
     const payload = {
