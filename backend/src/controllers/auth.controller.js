@@ -103,48 +103,12 @@ export const login = async (req, res, next) => {
 
 export const logout = async (req, res, next) => {
   try {
-    // ── Detect logout type ────────────────────────────────
-    // Explicit logout (button click):
-    //   Token arrives via Authorization header → req.user is set by middleware
-    //   → perform clock-out
-    //
-    // sendBeacon logout (tab close OR refresh):
-    //   Browser cannot send Authorization header with sendBeacon
-    //   → token arrives in req.body.token instead → req.user is NOT set
-    //   → skip clock-out (refresh must not end the session)
-    //   → clock-out handled by: 2-miss heartbeat or 10-min backend cron
-    const isBeacon = !req.user && !!req.body?.token;
-
-    let userId = req.user?.id;
-    let role   = req.user?.role;
-
-    // Verify token from body for beacon requests
-    if (isBeacon) {
-      try {
-        const decoded = jwt.verify(req.body.token, process.env.JWT_SECRET);
-        userId = decoded.id;
-        role   = decoded.role;
-      } catch {
-        // Expired or invalid token — return 200 so sendBeacon doesn't retry
-        return res.status(200).json({ success: false, message: 'Invalid token.' });
-      }
-    }
-
-    if (!userId) {
-      return res.status(200).json({ success: false, message: 'No user identified.' });
-    }
-
-    // ── Clock-out only on explicit logout (not beacon) ────
-    // Beacon fires on BOTH refresh and tab close — we cannot distinguish
-    // them reliably on the frontend (Vercel SPA breaks performance.navigation).
-    // So we skip clock-out for all beacon requests.
-    // Tab-close sessions end within 10 mins via autoClockOutInactive cron.
-    if (role === 'EMPLOYEE' && !isBeacon) {
+    if (req.user.role === 'EMPLOYEE') {
       const { start, end } = getTodayRange();
 
       const openSession = await prisma.attendance.findFirst({
         where: {
-          userId,
+          userId:   req.user.id,
           clockIn:  { gte: start, lte: end },
           clockOut: null,
         },
@@ -167,7 +131,6 @@ export const logout = async (req, res, next) => {
         });
       }
     }
-
     return res.status(200).json({ success: true, message: 'Logged out.' });
   } catch (err) {
     next(err);
