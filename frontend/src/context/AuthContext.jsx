@@ -35,6 +35,8 @@ export const AuthProvider = ({ children }) => {
   const [token,   setToken]   = useState(() => sessionStorage.getItem('token'));
   const [loading, setLoading] = useState(true);
   const heartbeatRef          = useRef(null);
+  const missCountRef          = useRef(0);     // consecutive heartbeat failures
+  const clockStoppedRef       = useRef(false); // true when auto-clocked-out due to misses
 
   // ── Restore session on load ───────────────────────────────
   useEffect(() => {
@@ -60,6 +62,7 @@ export const AuthProvider = ({ children }) => {
   }, [token]);
 
   // ── Heartbeat every 4 mins on ALL pages ───────────────────
+  // 2 consecutive failures → auto clock-out (screen likely asleep/offline)
   useEffect(() => {
     if (!user || user.role !== 'EMPLOYEE' || !token) {
       if (heartbeatRef.current) {
@@ -69,11 +72,30 @@ export const AuthProvider = ({ children }) => {
       return;
     }
 
+    // Reset miss state whenever this effect re-runs (login / token change)
+    missCountRef.current   = 0;
+    clockStoppedRef.current = false;
+
     const sendHeartbeat = async () => {
       try {
         await axios.post(`${API}/attendance/heartbeat`);
+        missCountRef.current = 0; // ✅ success — reset counter
       } catch {
-        // Silent fail
+        missCountRef.current += 1;
+
+        if (missCountRef.current >= 2) {
+          // 2 consecutive misses — screen likely asleep or offline
+          // Stop heartbeat and auto clock-out
+          clearInterval(heartbeatRef.current);
+          heartbeatRef.current    = null;
+          clockStoppedRef.current = true;
+
+          try {
+            await axios.post(`${API}/attendance/clock-out`);
+          } catch {
+            // Silent fail — session will expire via backend timeout anyway
+          }
+        }
       }
     };
 
@@ -89,15 +111,10 @@ export const AuthProvider = ({ children }) => {
   }, [user, token]);
 
   // ── Visibility + immediate clock-in check ─────────────────
-  // Runs immediately when user is set (handles refresh restore)
-  // Also runs on screen wake / tab switch back
   useEffect(() => {
     if (!user || user.role !== 'EMPLOYEE' || !token) return;
 
-    // Shared clock-in check with retry for slow backend
     const checkAndClockIn = async () => {
-      // Try up to 3 times with increasing delays
-      // Handles Render cold start (backend waking up)
       for (let attempt = 1; attempt <= 3; attempt++) {
         try {
           const { data } = await axios.get(`${API}/attendance/today`);
@@ -113,48 +130,59 @@ export const AuthProvider = ({ children }) => {
             });
           }
 
-          // Restart heartbeat if stopped
-          if (!heartbeatRef.current) {
+          // Restart heartbeat only if it was stopped for a non-miss reason
+          // (e.g. tab was hidden). If clockStoppedRef is true, the employee
+          // was auto-clocked-out — do NOT silently restart on screen wake.
+          if (!heartbeatRef.current && !clockStoppedRef.current) {
+            missCountRef.current = 0;
             const sendHeartbeat = async () => {
               try {
                 await axios.post(`${API}/attendance/heartbeat`);
+                missCountRef.current = 0;
               } catch {
-                // Silent fail
+                missCountRef.current += 1;
+                if (missCountRef.current >= 2) {
+                  clearInterval(heartbeatRef.current);
+                  heartbeatRef.current    = null;
+                  clockStoppedRef.current = true;
+                  try {
+                    await axios.post(`${API}/attendance/clock-out`);
+                  } catch { /* silent */ }
+                }
               }
             };
             sendHeartbeat();
             heartbeatRef.current = setInterval(sendHeartbeat, 4 * 60 * 1000);
           }
 
-          return; // ✅ Success — stop retrying
+          return; // ✅ success
 
         } catch {
           if (attempt < 3) {
-            // Wait before retry: 2s, then 4s
             await new Promise((r) => setTimeout(r, attempt * 2000));
           }
-          // Silent fail on final attempt
         }
       }
     };
 
-    // ── Run immediately when user is restored ─────────────
-    // This handles the case where:
-    //   1. Page was refreshed (keepalive logged out, need to re-clock-in)
-    //   2. Page became visible after sleep
-    //   3. Token restored from sessionStorage
+    // Run immediately on mount (handles refresh / token restore)
     checkAndClockIn();
 
     const handleVisibilityChange = async () => {
       if (document.visibilityState === 'hidden') {
-        // Screen sleeping or tab hidden — stop heartbeat
+        // Tab hidden or screen sleeping — pause heartbeat
         if (heartbeatRef.current) {
           clearInterval(heartbeatRef.current);
           heartbeatRef.current = null;
         }
       } else if (document.visibilityState === 'visible') {
-        // Screen woke up or tab came back — check clock-in
-        await checkAndClockIn();
+        // Screen woke up or tab came back
+        // Only re-clock-in if NOT stopped due to missed heartbeats.
+        // If clockStoppedRef is true, the session was intentionally ended
+        // because the employee was away — don't silently restart it.
+        if (!clockStoppedRef.current) {
+          await checkAndClockIn();
+        }
       }
     };
 
@@ -164,22 +192,31 @@ export const AuthProvider = ({ children }) => {
   }, [user, token]);
 
   // ── Tab close → auto clock-out + logout ──────────────────
-  // Uses sendBeacon because fetch/axios are cancelled by the
-  // browser before they complete during tab/window close.
-  // sendBeacon guarantees the POST is delivered even while unloading.
+  // sendBeacon is used because fetch/axios are cancelled by the browser
+  // during unload. sendBeacon guarantees delivery even as the page closes.
+  // Refresh is detected via the Performance Navigation API — on a true close
+  // neither the legacy type===1 nor the modern 'reload' type is set.
   useEffect(() => {
     if (!user || !token) return;
 
     const handleBeforeUnload = () => {
-      // Stop heartbeat immediately
+      // Detect refresh via Performance API.
+      // type === 1 (legacy) or 'reload' (modern) means F5 / Ctrl+R.
+      // On a true tab close neither of these is set.
+      const isRefresh =
+        (performance?.navigation?.type === 1) ||
+        (performance?.getEntriesByType?.('navigation')?.[0]?.type === 'reload');
+
+      if (isRefresh) return; // ✅ refresh — keep session alive, do nothing
+
+      // True tab/window close — stop heartbeat and beacon logout
       if (heartbeatRef.current) {
         clearInterval(heartbeatRef.current);
         heartbeatRef.current = null;
       }
 
-      // Send token in body because sendBeacon cannot set
-      // custom headers (Authorization header won't be sent).
-      // Backend must read token from body as fallback.
+      // sendBeacon cannot set custom headers, so token goes in the body.
+      // Backend must read token from req.body.token as fallback.
       const blob = new Blob(
         [JSON.stringify({ token })],
         { type: 'application/json' }
