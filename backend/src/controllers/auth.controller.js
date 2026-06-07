@@ -103,12 +103,36 @@ export const login = async (req, res, next) => {
 
 export const logout = async (req, res, next) => {
   try {
-    if (req.user.role === 'EMPLOYEE') {
+    // ── Resolve user from header OR body ─────────────────
+    // Normal logout (button click): token comes via Authorization header.
+    // Tab-close logout (sendBeacon): browser cannot send custom headers,
+    // so the frontend puts the token in req.body.token instead.
+    // We verify it manually here so auth middleware can stay unchanged.
+    let userId = req.user?.id;
+    let role   = req.user?.role;
+
+    if (!userId && req.body?.token) {
+      try {
+        const decoded = jwt.verify(req.body.token, process.env.JWT_SECRET);
+        userId = decoded.id;
+        role   = decoded.role;
+      } catch {
+        // Invalid or expired token — still return 200 so sendBeacon doesn't retry
+        return res.status(200).json({ success: false, message: 'Invalid token.' });
+      }
+    }
+
+    if (!userId) {
+      return res.status(200).json({ success: false, message: 'No user identified.' });
+    }
+
+    // ── Auto clock-out for EMPLOYEE on logout ─────────────
+    if (role === 'EMPLOYEE') {
       const { start, end } = getTodayRange();
 
       const openSession = await prisma.attendance.findFirst({
         where: {
-          userId:   req.user.id,
+          userId,
           clockIn:  { gte: start, lte: end },
           clockOut: null,
         },
@@ -131,6 +155,7 @@ export const logout = async (req, res, next) => {
         });
       }
     }
+
     return res.status(200).json({ success: true, message: 'Logged out.' });
   } catch (err) {
     next(err);
