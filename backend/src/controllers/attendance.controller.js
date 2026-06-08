@@ -15,7 +15,6 @@ export const clockIn = async (req, res, next) => {
     const { latitude, longitude, location } = req.body;
     const { start, end } = getTodayRange();
 
-    // ── Check already clocked in ──────────────────────────
     const openSession = await prisma.attendance.findFirst({
       where: { userId, clockIn: { gte: start, lte: end }, clockOut: null },
     });
@@ -27,8 +26,6 @@ export const clockIn = async (req, res, next) => {
       });
     }
 
-    // ── Always create fresh session ───────────────────────
-    // Gap calculation and display merging handled on frontend
     const attendance = await prisma.attendance.create({
       data: {
         userId,
@@ -152,8 +149,6 @@ export const heartbeat = async (req, res, next) => {
       where: { userId, clockIn: { gte: start, lte: end }, clockOut: null },
     });
 
-    // No active session — return 200 silently
-    // Don't return 404 (causes console errors and looks like missing route)
     if (!openSession) {
       return res.status(200).json({
         success: false,
@@ -178,13 +173,18 @@ export const heartbeat = async (req, res, next) => {
 export const autoClockOutInactive = async () => {
   try {
     const { start, end } = getTodayRange();
-    const tenMinsAgo = new Date(Date.now() - 10 * 60 * 1000);
+
+    // ── 30 min threshold ──────────────────────────────────
+    // Tab switch: heartbeat keeps running → never triggers ✅
+    // Screen sleep > 30 mins: triggers correctly ✅
+    // Short lock (< 30 mins): session stays open ✅
+    const thirtyMinsAgo = new Date(Date.now() - 30 * 60 * 1000);
 
     const staleSessions = await prisma.attendance.findMany({
       where: {
         clockIn:   { gte: start, lte: end },
         clockOut:  null,
-        updatedAt: { lt: tenMinsAgo },
+        updatedAt: { lt: thirtyMinsAgo },
       },
       include: {
         user: { select: { name: true, email: true } },
