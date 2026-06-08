@@ -70,6 +70,7 @@ export const login = async (req, res, next) => {
         });
         clockInTime = attendance.clockIn;
       } else {
+        // ── Update location if missing on existing session ─
         if (!openSession.latitude && latitude) {
           await prisma.attendance.update({
             where: { id: openSession.id },
