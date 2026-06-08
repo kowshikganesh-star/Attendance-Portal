@@ -59,7 +59,12 @@ export const AuthProvider = ({ children }) => {
 
   }, [token]);
 
-  // ── Heartbeat every 4 mins on ALL pages ───────────────────
+  // ── Heartbeat every 4 mins ────────────────────────────────
+  // Runs on ALL pages, NEVER stops on tab switch or screen lock
+  // Only stops on logout or user = null
+  // Tab switch: Chrome keeps timers running in background ✅
+  // Screen sleep: CPU pauses JS → heartbeat pauses naturally ✅
+  // After wake: heartbeat resumes automatically ✅
   useEffect(() => {
     if (!user || user.role !== 'EMPLOYEE' || !token) {
       if (heartbeatRef.current) {
@@ -73,11 +78,11 @@ export const AuthProvider = ({ children }) => {
       try {
         await axios.post(`${API}/attendance/heartbeat`);
       } catch {
-        // Silent fail
+        // Silent fail — don't disrupt the interval
       }
     };
 
-    sendHeartbeat();
+    sendHeartbeat(); // Fire immediately on mount
     heartbeatRef.current = setInterval(sendHeartbeat, 4 * 60 * 1000);
 
     return () => {
@@ -88,13 +93,13 @@ export const AuthProvider = ({ children }) => {
     };
   }, [user, token]);
 
-  // ── Visibility + immediate clock-in check ─────────────────
-  // Runs immediately when user is set (handles refresh restore)
-  // Also runs on screen wake / tab switch back
+  // ── Visibility handler ────────────────────────────────────
+  // Tab switch hidden  → do NOTHING (heartbeat keeps running) ✅
+  // Screen wake/return → checkAndClockIn (restore if cron closed) ✅
   useEffect(() => {
     if (!user || user.role !== 'EMPLOYEE' || !token) return;
 
-    // ── Shared clock-in check with retry for slow backend ──
+    // Shared clock-in check with retry for slow backend
     const checkAndClockIn = async () => {
       for (let attempt = 1; attempt <= 3; attempt++) {
         try {
@@ -111,46 +116,30 @@ export const AuthProvider = ({ children }) => {
             });
           }
 
-          // Restart heartbeat if stopped
-          if (!heartbeatRef.current) {
-            const sendHeartbeat = async () => {
-              try {
-                await axios.post(`${API}/attendance/heartbeat`);
-              } catch {
-                // Silent fail
-              }
-            };
-            sendHeartbeat();
-            heartbeatRef.current = setInterval(sendHeartbeat, 4 * 60 * 1000);
-          }
-
           return; // ✅ Success — stop retrying
 
         } catch {
           if (attempt < 3) {
-            // Wait before retry: 2s, then 4s
             await new Promise((r) => setTimeout(r, attempt * 2000));
           }
-          // Silent fail on final attempt
         }
       }
     };
 
-    // ── Run immediately when user is restored ─────────────
-    // Handles: refresh restore, session restore, page wake
+    // Run immediately when user is restored (handles refresh)
     checkAndClockIn();
 
     const handleVisibilityChange = async () => {
-      if (document.visibilityState === 'hidden') {
-        // Screen sleeping or tab hidden — stop heartbeat
-        if (heartbeatRef.current) {
-          clearInterval(heartbeatRef.current);
-          heartbeatRef.current = null;
-        }
-      } else if (document.visibilityState === 'visible') {
-        // Screen woke up or tab came back — check clock-in
+      if (document.visibilityState === 'visible') {
+        // Coming back from sleep/lock or tab switch
+        // Just verify session is still open
+        // Heartbeat was NEVER stopped so no need to restart it
         await checkAndClockIn();
       }
+      // hidden → do NOTHING
+      // Heartbeat keeps running in background ✅
+      // Tab switch: JS timers continue in background tabs ✅
+      // Screen sleep: CPU pauses naturally, resumes on wake ✅
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
