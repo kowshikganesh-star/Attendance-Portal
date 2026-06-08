@@ -88,17 +88,15 @@ export const AuthProvider = ({ children }) => {
     };
   }, [user, token]);
 
-  // ── Page Visibility — screen sleep/wake handler ───────────
+  // ── Visibility + immediate clock-in check ─────────────────
+  // Runs immediately when user is set (handles refresh restore)
+  // Also runs on screen wake / tab switch back
   useEffect(() => {
     if (!user || user.role !== 'EMPLOYEE' || !token) return;
 
-    const handleVisibilityChange = async () => {
-      if (document.visibilityState === 'hidden') {
-        if (heartbeatRef.current) {
-          clearInterval(heartbeatRef.current);
-          heartbeatRef.current = null;
-        }
-      } else if (document.visibilityState === 'visible') {
+    // ── Shared clock-in check with retry for slow backend ──
+    const checkAndClockIn = async () => {
+      for (let attempt = 1; attempt <= 3; attempt++) {
         try {
           const { data } = await axios.get(`${API}/attendance/today`);
 
@@ -113,6 +111,7 @@ export const AuthProvider = ({ children }) => {
             });
           }
 
+          // Restart heartbeat if stopped
           if (!heartbeatRef.current) {
             const sendHeartbeat = async () => {
               try {
@@ -124,9 +123,33 @@ export const AuthProvider = ({ children }) => {
             sendHeartbeat();
             heartbeatRef.current = setInterval(sendHeartbeat, 4 * 60 * 1000);
           }
+
+          return; // ✅ Success — stop retrying
+
         } catch {
-          // Silent fail
+          if (attempt < 3) {
+            // Wait before retry: 2s, then 4s
+            await new Promise((r) => setTimeout(r, attempt * 2000));
+          }
+          // Silent fail on final attempt
         }
+      }
+    };
+
+    // ── Run immediately when user is restored ─────────────
+    // Handles: refresh restore, session restore, page wake
+    checkAndClockIn();
+
+    const handleVisibilityChange = async () => {
+      if (document.visibilityState === 'hidden') {
+        // Screen sleeping or tab hidden — stop heartbeat
+        if (heartbeatRef.current) {
+          clearInterval(heartbeatRef.current);
+          heartbeatRef.current = null;
+        }
+      } else if (document.visibilityState === 'visible') {
+        // Screen woke up or tab came back — check clock-in
+        await checkAndClockIn();
       }
     };
 
