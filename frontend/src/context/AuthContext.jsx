@@ -35,7 +35,6 @@ export const AuthProvider = ({ children }) => {
   const [token,   setToken]   = useState(() => sessionStorage.getItem('token'));
   const [loading, setLoading] = useState(true);
   const heartbeatRef          = useRef(null);
-  const lastHeartbeatRef      = useRef(Date.now()); // ← track last sent time
 
   // ── Restore session on load ───────────────────────────────
   useEffect(() => {
@@ -61,6 +60,11 @@ export const AuthProvider = ({ children }) => {
   }, [token]);
 
   // ── Heartbeat every 4 mins ────────────────────────────────
+  // Runs on ALL pages, NEVER stops on tab switch or screen lock
+  // Only stops on logout or user = null
+  // Tab switch: Chrome keeps timers running in background ✅
+  // Screen sleep: CPU pauses JS → heartbeat pauses naturally ✅
+  // After wake: heartbeat resumes automatically ✅
   useEffect(() => {
     if (!user || user.role !== 'EMPLOYEE' || !token) {
       if (heartbeatRef.current) {
@@ -71,27 +75,14 @@ export const AuthProvider = ({ children }) => {
     }
 
     const sendHeartbeat = async () => {
-      const now     = Date.now();
-      const gapMins = (now - lastHeartbeatRef.current) / 60000;
-
-      // ── Gap check: if > 10 mins = laptop was sleeping ──
-      // Don't update heartbeat — cron should close session
-      // checkAndClockIn (from visibility) handles re-opening ✅
-      if (gapMins > 10) {
-        lastHeartbeatRef.current = now; // reset tracker
-        return; // skip — don't ping server
-      }
-
-      lastHeartbeatRef.current = now;
-
       try {
         await axios.post(`${API}/attendance/heartbeat`);
       } catch {
-        // Silent fail
+        // Silent fail — don't disrupt the interval
       }
     };
 
-    sendHeartbeat();
+    sendHeartbeat(); // Fire immediately on mount
     heartbeatRef.current = setInterval(sendHeartbeat, 4 * 60 * 1000);
 
     return () => {
@@ -102,35 +93,13 @@ export const AuthProvider = ({ children }) => {
     };
   }, [user, token]);
 
-  // ── Visibility + immediate clock-in check ─────────────────
+  // ── Visibility handler ────────────────────────────────────
+  // Tab switch hidden  → do NOTHING (heartbeat keeps running) ✅
+  // Screen wake/return → checkAndClockIn (restore if cron closed) ✅
   useEffect(() => {
     if (!user || user.role !== 'EMPLOYEE' || !token) return;
 
-    const startHeartbeat = () => {
-      if (!heartbeatRef.current) {
-        const sendHeartbeat = async () => {
-          const now     = Date.now();
-          const gapMins = (now - lastHeartbeatRef.current) / 60000;
-
-          if (gapMins > 10) {
-            lastHeartbeatRef.current = now;
-            return;
-          }
-
-          lastHeartbeatRef.current = now;
-
-          try {
-            await axios.post(`${API}/attendance/heartbeat`);
-          } catch {
-            // Silent fail
-          }
-        };
-        sendHeartbeat();
-        heartbeatRef.current = setInterval(sendHeartbeat, 4 * 60 * 1000);
-      }
-    };
-
-    // Clock-in check with retry
+    // Shared clock-in check with retry for slow backend
     const checkAndClockIn = async () => {
       for (let attempt = 1; attempt <= 3; attempt++) {
         try {
@@ -147,10 +116,7 @@ export const AuthProvider = ({ children }) => {
             });
           }
 
-          // Reset heartbeat tracker after clock-in restore
-          lastHeartbeatRef.current = Date.now();
-          startHeartbeat();
-          return;
+          return; // ✅ Success — stop retrying
 
         } catch {
           if (attempt < 3) {
@@ -160,21 +126,20 @@ export const AuthProvider = ({ children }) => {
       }
     };
 
-    // Run immediately when user is restored
+    // Run immediately when user is restored (handles refresh)
     checkAndClockIn();
 
     const handleVisibilityChange = async () => {
-      if (document.visibilityState === 'hidden') {
-        // Tab hidden or screen sleeping
-        // Stop heartbeat interval
-        if (heartbeatRef.current) {
-          clearInterval(heartbeatRef.current);
-          heartbeatRef.current = null;
-        }
-      } else if (document.visibilityState === 'visible') {
-        // Came back — check and restore session
+      if (document.visibilityState === 'visible') {
+        // Coming back from sleep/lock or tab switch
+        // Just verify session is still open
+        // Heartbeat was NEVER stopped so no need to restart it
         await checkAndClockIn();
       }
+      // hidden → do NOTHING
+      // Heartbeat keeps running in background ✅
+      // Tab switch: JS timers continue in background tabs ✅
+      // Screen sleep: CPU pauses naturally, resumes on wake ✅
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
