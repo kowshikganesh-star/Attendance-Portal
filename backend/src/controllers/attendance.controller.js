@@ -178,7 +178,7 @@ export const autoClockOutInactive = async () => {
     // Tab switch: heartbeat keeps running → never triggers ✅
     // Screen sleep > 30 mins: triggers correctly ✅
     // Short lock (< 30 mins): session stays open ✅
-    const thirtyMinsAgo = new Date(Date.now() - 30 * 60 * 1000);
+    const thirtyMinsAgo = new Date(Date.now() - 10 * 60 * 1000);
 
     const staleSessions = await prisma.attendance.findMany({
       where: {
