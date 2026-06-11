@@ -75,9 +75,10 @@ export const AuthProvider = ({ children }) => {
       // Double protection:
       // 1. visibilityChange hidden clears interval
       // 2. Even if interval somehow fires, skip if hidden
-      if (document.hidden) {
-        return; // Don't send heartbeat when screen is off ✅
-      }
+      //
+      // if (document.hidden) {
+      //   return; // Don't send heartbeat when screen is off ✅
+      // }
 
       // ── Skip if long gap (laptop was sleeping) ─────────
       // Prevents false heartbeat on wake
@@ -116,7 +117,7 @@ export const AuthProvider = ({ children }) => {
           const now     = Date.now();
           const gapMins = (now - lastHeartbeatRef.current) / 60000;
 
-          if (document.hidden) return;
+          // if (document.hidden) return;
           if (gapMins > 10) {
             lastHeartbeatRef.current = now;
             return;
@@ -159,16 +160,21 @@ export const AuthProvider = ({ children }) => {
 
     checkAndClockIn();
 
+    // const handleVisibilityChange = async () => {
+    //   if (document.visibilityState === 'hidden') {
+    //     // Stop interval — extra safety with document.hidden check in sendHeartbeat
+    //     if (heartbeatRef.current) {
+    //       clearInterval(heartbeatRef.current);
+    //       heartbeatRef.current = null;
+    //     }
+    //   } else if (document.visibilityState === 'visible') {
+    //     await checkAndClockIn();
+    //   }
+
     const handleVisibilityChange = async () => {
-      if (document.visibilityState === 'hidden') {
-        // Stop interval — extra safety with document.hidden check in sendHeartbeat
-        if (heartbeatRef.current) {
-          clearInterval(heartbeatRef.current);
-          heartbeatRef.current = null;
-        }
-      } else if (document.visibilityState === 'visible') {
-        await checkAndClockIn();
-      }
+  if (document.visibilityState === 'visible') {
+    await checkAndClockIn();
+  }
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
