@@ -6,7 +6,7 @@ import { useNavigate } from 'react-router-dom';
 import toast, { Toaster } from 'react-hot-toast';
 import {
   ShieldCheck, LogOut, ArrowLeft, CheckCircle,
-  XCircle, AlertCircle, Calendar, X,
+  XCircle, AlertCircle, Calendar, X, ChevronDown, ChevronUp,
 } from 'lucide-react';
 
 const API = import.meta.env.VITE_API_URL;
@@ -45,40 +45,37 @@ const TypeBadge = ({ type }) => {
   );
 };
 
-// ── Expandable text cell ──────────────────────────────────
-const ExpandableText = ({ text, cellKey, expandedCell, setExpandedCell }) => {
-  if (!text || text === '—') return <span className="text-slate-500">—</span>;
+// ── Click to expand cell ──────────────────────────────────
+const ExpandableCell = ({ text, cellKey, expandedCell, setExpandedCell }) => {
+  if (!text || text === '—') return <span className="text-slate-500 text-sm">—</span>;
 
   const isExpanded = expandedCell === cellKey;
-  const isLong     = text.length > 40;
+  const isLong     = text.length > 30;
 
   if (!isLong) return <span className="text-sm text-slate-300">{text}</span>;
 
   return (
-    <div>
-      {isExpanded ? (
-        // Full text
-        <p className="text-sm text-slate-300 whitespace-pre-wrap break-words max-w-xs">
-          {text}
-          <button
-            onClick={() => setExpandedCell(null)}
-            className="ml-2 text-xs text-indigo-400 hover:text-indigo-300 underline whitespace-nowrap"
-          >
-            less
-          </button>
-        </p>
-      ) : (
-        // Truncated text
-        <p className="text-sm text-slate-300">
-          {text.slice(0, 40)}...
-          <button
-            onClick={() => setExpandedCell(cellKey)}
-            className="ml-1 text-xs text-indigo-400 hover:text-indigo-300 underline whitespace-nowrap"
-          >
-            more
-          </button>
-        </p>
-      )}
+    <div
+      onClick={() => setExpandedCell(isExpanded ? null : cellKey)}
+      className="cursor-pointer group"
+    >
+      {/* Text — truncated or full */}
+      <p className={`text-sm text-slate-300 transition-all duration-200
+        ${isExpanded
+          ? 'whitespace-normal break-words'     // full text ✅
+          : 'truncate max-w-[140px]'             // 1 line clipped ✅
+        }`}
+      >
+        {text}
+      </p>
+
+      {/* Chevron icon — shows expand/collapse state */}
+      <span className="flex items-center gap-1 mt-1 text-indigo-400 text-xs">
+        {isExpanded
+          ? <><ChevronUp   className="w-3 h-3" /> minimize</>
+          : <><ChevronDown className="w-3 h-3" /> expand</>
+        }
+      </span>
     </div>
   );
 };
@@ -97,7 +94,6 @@ const AdminLeaves = () => {
   const [rejectModal,  setRejectModal]  = useState(null);
   const [rejectRemark, setRejectRemark] = useState('');
   const [submitting,   setSubmitting]   = useState(false);
-  // ── Track which cell is expanded ─────────────────────────
   const [expandedCell, setExpandedCell] = useState(null);
 
   const fetchLeaves = useCallback(async () => {
@@ -287,17 +283,14 @@ const AdminLeaves = () => {
                         </div>
                       </td>
 
-                      {/* Type */}
                       <td className="px-5 py-4"><TypeBadge type={leave.type} /></td>
-
-                      {/* Dates */}
                       <td className="px-5 py-4 text-sm text-slate-300 whitespace-nowrap">{formatDate(leave.fromDate)}</td>
                       <td className="px-5 py-4 text-sm text-slate-300 whitespace-nowrap">{formatDate(leave.toDate)}</td>
                       <td className="px-5 py-4 text-sm font-semibold text-white">{calcDays(leave.fromDate, leave.toDate)}</td>
 
                       {/* Reason — click to expand ✅ */}
-                      <td className="px-5 py-4 max-w-[180px]">
-                        <ExpandableText
+                      <td className="px-5 py-4 w-40">
+                        <ExpandableCell
                           text={leave.reason}
                           cellKey={`reason-${leave.id}`}
                           expandedCell={expandedCell}
@@ -305,12 +298,11 @@ const AdminLeaves = () => {
                         />
                       </td>
 
-                      {/* Status */}
                       <td className="px-5 py-4"><StatusBadge status={leave.status} /></td>
 
                       {/* Admin Remark — click to expand ✅ */}
-                      <td className="px-5 py-4 max-w-[180px]">
-                        <ExpandableText
+                      <td className="px-5 py-4 w-40">
+                        <ExpandableCell
                           text={leave.adminRemark || '—'}
                           cellKey={`remark-${leave.id}`}
                           expandedCell={expandedCell}
