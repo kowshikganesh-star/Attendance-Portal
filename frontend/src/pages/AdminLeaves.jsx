@@ -30,9 +30,7 @@ const StatusBadge = ({ status }) => {
 };
 
 const TypeBadge = ({ type }) => {
-  const labels = {
-    SL: 'SL', CL: 'CL', LOP: 'LOP', HD_LOP: 'HD-LOP', PL: 'PL',
-  };
+  const labels = { SL: 'SL', CL: 'CL', LOP: 'LOP', HD_LOP: 'HD-LOP', PL: 'PL' };
   const styles = {
     SL:     'bg-rose-500/20    text-rose-400',
     CL:     'bg-indigo-500/20  text-indigo-400',
@@ -47,20 +45,60 @@ const TypeBadge = ({ type }) => {
   );
 };
 
+// ── Expandable text cell ──────────────────────────────────
+const ExpandableText = ({ text, cellKey, expandedCell, setExpandedCell }) => {
+  if (!text || text === '—') return <span className="text-slate-500">—</span>;
+
+  const isExpanded = expandedCell === cellKey;
+  const isLong     = text.length > 40;
+
+  if (!isLong) return <span className="text-sm text-slate-300">{text}</span>;
+
+  return (
+    <div>
+      {isExpanded ? (
+        // Full text
+        <p className="text-sm text-slate-300 whitespace-pre-wrap break-words max-w-xs">
+          {text}
+          <button
+            onClick={() => setExpandedCell(null)}
+            className="ml-2 text-xs text-indigo-400 hover:text-indigo-300 underline whitespace-nowrap"
+          >
+            less
+          </button>
+        </p>
+      ) : (
+        // Truncated text
+        <p className="text-sm text-slate-300">
+          {text.slice(0, 40)}...
+          <button
+            onClick={() => setExpandedCell(cellKey)}
+            className="ml-1 text-xs text-indigo-400 hover:text-indigo-300 underline whitespace-nowrap"
+          >
+            more
+          </button>
+        </p>
+      )}
+    </div>
+  );
+};
+
 const AdminLeaves = () => {
   const { user, logout } = useAuth();
   const navigate         = useNavigate();
 
-  const [leaves,     setLeaves]     = useState([]);
-  const [stats,      setStats]      = useState({});
-  const [employees,  setEmployees]  = useState([]);
-  const [loading,    setLoading]    = useState(true);
+  const [leaves,       setLeaves]       = useState([]);
+  const [stats,        setStats]        = useState({});
+  const [employees,    setEmployees]    = useState([]);
+  const [loading,      setLoading]      = useState(true);
   const [statusFilter, setStatusFilter] = useState('ALL');
   const [typeFilter,   setTypeFilter]   = useState('ALL');
   const [userFilter,   setUserFilter]   = useState('');
   const [rejectModal,  setRejectModal]  = useState(null);
   const [rejectRemark, setRejectRemark] = useState('');
   const [submitting,   setSubmitting]   = useState(false);
+  // ── Track which cell is expanded ─────────────────────────
+  const [expandedCell, setExpandedCell] = useState(null);
 
   const fetchLeaves = useCallback(async () => {
     setLoading(true);
@@ -93,9 +131,7 @@ const AdminLeaves = () => {
   };
 
   const handleReject = async () => {
-    if (!rejectRemark.trim()) {
-      toast.error('Rejection reason is required.'); return;
-    }
+    if (!rejectRemark.trim()) { toast.error('Rejection reason is required.'); return; }
     setSubmitting(true);
     try {
       const { data } = await axios.patch(
@@ -116,10 +152,8 @@ const AdminLeaves = () => {
   const formatDate = (d) =>
     new Date(d).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' });
 
-  const calcDays = (from, to) => {
-    const diff = new Date(to) - new Date(from);
-    return Math.ceil(diff / (1000 * 60 * 60 * 24)) + 1;
-  };
+  const calcDays = (from, to) =>
+    Math.ceil((new Date(to) - new Date(from)) / (1000 * 60 * 60 * 24)) + 1;
 
   return (
     <div className="min-h-screen bg-slate-950 text-white">
@@ -239,6 +273,8 @@ const AdminLeaves = () => {
                 <tbody className="divide-y divide-slate-800">
                   {leaves.map((leave) => (
                     <tr key={leave.id} className="hover:bg-slate-800/50 transition-colors">
+
+                      {/* Employee */}
                       <td className="px-5 py-4">
                         <div className="flex items-center gap-3">
                           <div className="w-8 h-8 bg-indigo-600 rounded-full flex items-center justify-center text-sm font-bold flex-shrink-0">
@@ -250,17 +286,39 @@ const AdminLeaves = () => {
                           </div>
                         </div>
                       </td>
+
+                      {/* Type */}
                       <td className="px-5 py-4"><TypeBadge type={leave.type} /></td>
+
+                      {/* Dates */}
                       <td className="px-5 py-4 text-sm text-slate-300 whitespace-nowrap">{formatDate(leave.fromDate)}</td>
                       <td className="px-5 py-4 text-sm text-slate-300 whitespace-nowrap">{formatDate(leave.toDate)}</td>
                       <td className="px-5 py-4 text-sm font-semibold text-white">{calcDays(leave.fromDate, leave.toDate)}</td>
-                      <td className="px-5 py-4 text-sm text-slate-300 max-w-xs">
-                        <p className="truncate max-w-32" title={leave.reason}>{leave.reason}</p>
+
+                      {/* Reason — click to expand ✅ */}
+                      <td className="px-5 py-4 max-w-[180px]">
+                        <ExpandableText
+                          text={leave.reason}
+                          cellKey={`reason-${leave.id}`}
+                          expandedCell={expandedCell}
+                          setExpandedCell={setExpandedCell}
+                        />
                       </td>
+
+                      {/* Status */}
                       <td className="px-5 py-4"><StatusBadge status={leave.status} /></td>
-                      <td className="px-5 py-4 text-sm text-slate-400 max-w-xs">
-                        <p className="truncate max-w-32" title={leave.adminRemark}>{leave.adminRemark || '—'}</p>
+
+                      {/* Admin Remark — click to expand ✅ */}
+                      <td className="px-5 py-4 max-w-[180px]">
+                        <ExpandableText
+                          text={leave.adminRemark || '—'}
+                          cellKey={`remark-${leave.id}`}
+                          expandedCell={expandedCell}
+                          setExpandedCell={setExpandedCell}
+                        />
                       </td>
+
+                      {/* Actions */}
                       <td className="px-5 py-4">
                         {leave.status === 'PENDING' ? (
                           <div className="flex items-center gap-2">
