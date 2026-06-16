@@ -170,7 +170,7 @@ export const AuthProvider = ({ children }) => {
   //
   // Extension detects:
   //   Screen lock (Win+L) → SCREEN_LOCKED → stop heartbeat ✅
-  //   Mouse idle 5 mins   → USER_IDLE     → stop heartbeat ✅
+  //   Mouse idle             → IGNORED (employees read/think for long) ✅
   //   Screen active       → SCREEN_ACTIVE → restore session ✅
   useEffect(() => {
     if (!user || user.role !== 'EMPLOYEE' || !token) return;
@@ -178,8 +178,8 @@ export const AuthProvider = ({ children }) => {
     const handleScreenEvent = (e) => {
       const { event } = e.detail;
 
-      if (event === 'SCREEN_LOCKED' || event === 'USER_IDLE') {
-        // Stop heartbeat — screen is locked or user is idle ✅
+      if (event === 'SCREEN_LOCKED') {
+        // Stop heartbeat — screen is locked ✅
         if (heartbeatRef.current) {
           clearInterval(heartbeatRef.current);
           heartbeatRef.current = null;
