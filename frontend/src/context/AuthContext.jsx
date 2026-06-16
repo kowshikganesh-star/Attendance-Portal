@@ -58,6 +58,8 @@ export const AuthProvider = ({ children }) => {
   }, [token]);
 
   // ── Heartbeat every 4 mins ────────────────────────────────
+  // NEVER stopped by tab switch ✅
+  // Only gapMins > 10 skips (detects real sleep) ✅
   useEffect(() => {
     if (!user || user.role !== 'EMPLOYEE' || !token) {
       if (heartbeatRef.current) {
@@ -71,17 +73,7 @@ export const AuthProvider = ({ children }) => {
       const now     = Date.now();
       const gapMins = (now - lastHeartbeatRef.current) / 60000;
 
-      // ── Skip if page is hidden (screen locked/sleep) ───
-      // Double protection:
-      // 1. visibilityChange hidden clears interval
-      // 2. Even if interval somehow fires, skip if hidden
-      //
-      // if (document.hidden) {
-      //   return; // Don't send heartbeat when screen is off ✅
-      // }
-
-      // ── Skip if long gap (laptop was sleeping) ─────────
-      // Prevents false heartbeat on wake
+      // Long gap = laptop was sleeping → skip ✅
       if (gapMins > 10) {
         lastHeartbeatRef.current = now;
         return;
@@ -116,13 +108,10 @@ export const AuthProvider = ({ children }) => {
         const sendHeartbeat = async () => {
           const now     = Date.now();
           const gapMins = (now - lastHeartbeatRef.current) / 60000;
-
-          // if (document.hidden) return;
           if (gapMins > 10) {
             lastHeartbeatRef.current = now;
             return;
           }
-
           lastHeartbeatRef.current = now;
           try {
             await axios.post(`${API}/attendance/heartbeat`);
@@ -158,27 +147,94 @@ export const AuthProvider = ({ children }) => {
       }
     };
 
+    // Run immediately on user restore (refresh, tab switch back)
     checkAndClockIn();
 
-    // const handleVisibilityChange = async () => {
-    //   if (document.visibilityState === 'hidden') {
-    //     // Stop interval — extra safety with document.hidden check in sendHeartbeat
-    //     if (heartbeatRef.current) {
-    //       clearInterval(heartbeatRef.current);
-    //       heartbeatRef.current = null;
-    //     }
-    //   } else if (document.visibilityState === 'visible') {
-    //     await checkAndClockIn();
-    //   }
-
     const handleVisibilityChange = async () => {
-  if (document.visibilityState === 'visible') {
-    await checkAndClockIn();
-  }
+      if (document.visibilityState === 'visible') {
+        await checkAndClockIn();
+      }
+      // hidden → do NOTHING
+      // Heartbeat keeps running for tab switch ✅
+      // Extension handles screen lock separately ✅
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+
+  }, [user, token]);
+
+  // ── Extension screen event listener ──────────────────────
+  // Optional: works better WITH extension installed ✅
+  // App works normally WITHOUT extension too ✅
+  //
+  // Extension detects:
+  //   Screen lock (Win+L) → SCREEN_LOCKED → stop heartbeat ✅
+  //   Mouse idle 5 mins   → USER_IDLE     → stop heartbeat ✅
+  //   Screen active       → SCREEN_ACTIVE → restore session ✅
+  useEffect(() => {
+    if (!user || user.role !== 'EMPLOYEE' || !token) return;
+
+    const handleScreenEvent = (e) => {
+      const { event } = e.detail;
+
+      if (event === 'SCREEN_LOCKED' || event === 'USER_IDLE') {
+        // Stop heartbeat — screen is locked or user is idle ✅
+        if (heartbeatRef.current) {
+          clearInterval(heartbeatRef.current);
+          heartbeatRef.current = null;
+        }
+        // Force gap > 10 so cron closes session ✅
+        lastHeartbeatRef.current = 0;
+        console.log('[AttendTrack] Heartbeat stopped:', event);
+      }
+
+      if (event === 'SCREEN_ACTIVE') {
+        // Screen came back — restore and restart ✅
+        lastHeartbeatRef.current = Date.now();
+
+        const restore = async () => {
+          for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+              const { data } = await axios.get(`${API}/attendance/today`);
+              if (!data.isClockedIn) {
+                const loc = await getLocation();
+                await axios.post(`${API}/attendance/clock-in`, {
+                  ...(loc && {
+                    latitude:  loc.latitude,
+                    longitude: loc.longitude,
+                    location:  loc.location,
+                  }),
+                });
+              }
+              // Restart heartbeat if stopped ✅
+              if (!heartbeatRef.current) {
+                const sendHeartbeat = async () => {
+                  const now     = Date.now();
+                  const gapMins = (now - lastHeartbeatRef.current) / 60000;
+                  if (gapMins > 10) { lastHeartbeatRef.current = now; return; }
+                  lastHeartbeatRef.current = now;
+                  try { await axios.post(`${API}/attendance/heartbeat`); } catch {}
+                };
+                sendHeartbeat();
+                heartbeatRef.current = setInterval(sendHeartbeat, 4 * 60 * 1000);
+              }
+              console.log('[AttendTrack] Session restored: screen active');
+              return;
+            } catch {
+              if (attempt < 3) {
+                await new Promise((r) => setTimeout(r, attempt * 2000));
+              }
+            }
+          }
+        };
+
+        restore();
+      }
+    };
+
+    window.addEventListener('attendtrack-screen-event', handleScreenEvent);
+    return () => window.removeEventListener('attendtrack-screen-event', handleScreenEvent);
 
   }, [user, token]);
 
