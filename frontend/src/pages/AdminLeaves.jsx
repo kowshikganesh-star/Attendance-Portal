@@ -57,20 +57,24 @@ const ExpandableCell = ({ text, cellKey, expandedCell, setExpandedCell }) => {
   return (
     <div
       onClick={() => setExpandedCell(isExpanded ? null : cellKey)}
-      className="cursor-pointer group"
+      className={`cursor-pointer rounded-lg transition-all duration-200
+        ${isExpanded
+          ? 'bg-slate-700/50 border border-slate-600/50 p-3 min-w-[260px]'
+          : 'hover:bg-slate-800/40 p-1'
+        }`}
     >
       {/* Text — truncated or full */}
-      <p className={`text-sm text-slate-300 transition-all duration-200
+      <p className={`text-sm text-slate-200 leading-relaxed transition-all duration-200
         ${isExpanded
-          ? 'whitespace-normal break-words'     // full text ✅
-          : 'truncate max-w-[140px]'             // 1 line clipped ✅
+          ? 'whitespace-normal break-words'   // full text, wide ✅
+          : 'truncate max-w-[130px]'          // 1 line clipped ✅
         }`}
       >
         {text}
       </p>
 
       {/* Chevron icon — shows expand/collapse state */}
-      <span className="flex items-center gap-1 mt-1 text-indigo-400 text-xs">
+      <span className="flex items-center gap-1 mt-1.5 text-indigo-400 text-xs font-medium">
         {isExpanded
           ? <><ChevronUp   className="w-3 h-3" /> minimize</>
           : <><ChevronDown className="w-3 h-3" /> expand</>
@@ -289,7 +293,7 @@ const AdminLeaves = () => {
                       <td className="px-5 py-4 text-sm font-semibold text-white">{calcDays(leave.fromDate, leave.toDate)}</td>
 
                       {/* Reason — click to expand ✅ */}
-                      <td className="px-5 py-4 w-40">
+                      <td className="px-5 py-4 min-w-[150px] max-w-[300px]">
                         <ExpandableCell
                           text={leave.reason}
                           cellKey={`reason-${leave.id}`}
@@ -301,7 +305,7 @@ const AdminLeaves = () => {
                       <td className="px-5 py-4"><StatusBadge status={leave.status} /></td>
 
                       {/* Admin Remark — click to expand ✅ */}
-                      <td className="px-5 py-4 w-40">
+                      <td className="px-5 py-4 min-w-[150px] max-w-[300px]">
                         <ExpandableCell
                           text={leave.adminRemark || '—'}
                           cellKey={`remark-${leave.id}`}
