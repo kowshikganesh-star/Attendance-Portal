@@ -175,19 +175,22 @@ export const AuthProvider = ({ children }) => {
   useEffect(() => {
     if (!user || user.role !== 'EMPLOYEE' || !token) return;
 
-    const handleScreenEvent = (e) => {
-      const { event } = e.detail;
+    const handleScreenEvent = async (e) => {  // ← add async ✅
+  const { event } = e.detail;
 
-      if (event === 'SCREEN_LOCKED') {
-        // Stop heartbeat — screen is locked ✅
-        if (heartbeatRef.current) {
-          clearInterval(heartbeatRef.current);
-          heartbeatRef.current = null;
-        }
-        // Force gap > 10 so cron closes session ✅
-        lastHeartbeatRef.current = 0;
-        console.log('[AttendTrack] Heartbeat stopped:', event);
+    if (event === 'SCREEN_LOCKED') {
+      // Final heartbeat FIRST ✅
+      try {
+        await axios.post(`${API}/attendance/heartbeat`);
+      } catch {}
+  
+      if (heartbeatRef.current) {
+        clearInterval(heartbeatRef.current);
+        heartbeatRef.current = null;
       }
+      lastHeartbeatRef.current = 0;
+      console.log('[AttendTrack] Final heartbeat sent, screen locked');
+    }
 
       if (event === 'SCREEN_ACTIVE') {
         // Screen came back — restore and restart ✅
