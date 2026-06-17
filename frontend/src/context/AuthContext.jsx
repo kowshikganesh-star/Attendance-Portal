@@ -190,7 +190,7 @@ export const AuthProvider = ({ children }) => {
       }
       lastHeartbeatRef.current = 0;
       console.log('[AttendTrack] Final heartbeat sent, screen locked');
-      console.log(Date.now());
+      console.log(new Date().toLocaleTimeString());
     }
 
       if (event === 'SCREEN_ACTIVE') {
@@ -224,7 +224,7 @@ export const AuthProvider = ({ children }) => {
                 heartbeatRef.current = setInterval(sendHeartbeat, 4 * 60 * 1000);
               }
               console.log('[AttendTrack] Session restored: screen active');
-              console.log(Date.now());
+              console.log(new Date().toLocaleTimeString());
               return;
             } catch {
               if (attempt < 3) {
