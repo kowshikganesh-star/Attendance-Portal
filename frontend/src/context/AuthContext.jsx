@@ -154,34 +154,13 @@ export const AuthProvider = ({ children }) => {
       if (document.visibilityState === 'visible') {
         await checkAndClockIn();
       }
-
-      if (document.visibilityState === 'hidden') {
-        // Final heartbeat on hidden ✅
-        // Sleep      → sent before CPU pauses → exact clockOut ✅
-        // Tab switch → extra update → harmless, interval keeps running ✅
-        try {
-          await axios.post(`${API}/attendance/heartbeat`);
-          lastHeartbeatRef.current = Date.now();
-        } catch {}
-      }
-    };
-
-    // ── Final heartbeat on tab/browser close ─────────────
-    // sendBeacon guaranteed even after tab closes ✅
-    // Also fires on refresh → just updates time → harmless ✅
-    const handleBeforeUnload = () => {
-      navigator.sendBeacon(
-        `${API}/attendance/heartbeat`,
-        JSON.stringify({})
-      );
+      // hidden → do NOTHING
+      // Heartbeat keeps running for tab switch ✅
+      // Extension handles screen lock separately ✅
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-    };
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
 
   }, [user, token]);
 
@@ -190,33 +169,29 @@ export const AuthProvider = ({ children }) => {
   // App works normally WITHOUT extension too ✅
   //
   // Extension detects:
-  //   Screen lock (Win+L) → SCREEN_LOCKED → final heartbeat + stop ✅
-  //   Mouse idle          → IGNORED (employees read/think for long) ✅
+  //   Screen lock (Win+L) → SCREEN_LOCKED → stop heartbeat ✅
+  //   Mouse idle             → IGNORED (employees read/think for long) ✅
   //   Screen active       → SCREEN_ACTIVE → restore session ✅
   useEffect(() => {
     if (!user || user.role !== 'EMPLOYEE' || !token) return;
 
-    const handleScreenEvent = async (e) => {
-      const { event } = e.detail;
+    const handleScreenEvent = async (e) => {  // ← add async ✅
+  const { event } = e.detail;
 
-      if (event === 'SCREEN_LOCKED') {
-        // Send FINAL heartbeat FIRST ✅
-        // Ensures clockOut = exact lock time
-        // Prevents employee losing up to 4 mins ✅
-        try {
-          await axios.post(`${API}/attendance/heartbeat`);
-        } catch {}
-
-        // NOW stop heartbeat ✅
-        if (heartbeatRef.current) {
-          clearInterval(heartbeatRef.current);
-          heartbeatRef.current = null;
-        }
-        // Force gap > 10 so any stray heartbeat is skipped ✅
-        lastHeartbeatRef.current = 0;
-        console.log('[AttendTrack] Final heartbeat sent, screen locked');
-        console.log(new Date().toLocaleTimeString());
+    if (event === 'SCREEN_LOCKED') {
+      // Final heartbeat FIRST ✅
+      try {
+        await axios.post(`${API}/attendance/heartbeat`);
+      } catch {}
+  
+      if (heartbeatRef.current) {
+        clearInterval(heartbeatRef.current);
+        heartbeatRef.current = null;
       }
+      lastHeartbeatRef.current = 0;
+      console.log('[AttendTrack] Final heartbeat sent, screen locked');
+      console.log(new Date().toLocaleTimeString());
+    }
 
       if (event === 'SCREEN_ACTIVE') {
         // Screen came back — restore and restart ✅
