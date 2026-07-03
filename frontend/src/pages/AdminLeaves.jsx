@@ -97,6 +97,8 @@ const AdminLeaves = () => {
   const [userFilter,   setUserFilter]   = useState('');
   const [rejectModal,  setRejectModal]  = useState(null);
   const [rejectRemark, setRejectRemark] = useState('');
+  const [approveModal, setApproveModal] = useState(null);
+  const [approveType,  setApproveType]  = useState('');
   const [submitting,   setSubmitting]   = useState(false);
   const [expandedCell, setExpandedCell] = useState(null);
 
@@ -120,13 +122,24 @@ const AdminLeaves = () => {
 
   useEffect(() => { fetchLeaves(); }, [fetchLeaves]);
 
-  const handleApprove = async (leave) => {
+  const openApproveModal = (leave) => {
+    setApproveModal(leave);
+    setApproveType(leave.type);
+  };
+
+  const handleApprove = async () => {
+    setSubmitting(true);
     try {
-      const { data } = await axios.patch(`${API}/leaves/${leave.id}/approve`, {});
+      const { data } = await axios.patch(`${API}/leaves/${approveModal.id}/approve`, {
+        type: approveType,
+      });
       toast.success(data.message);
+      setApproveModal(null);
       fetchLeaves();
     } catch (err) {
       toast.error(err?.response?.data?.message || 'Failed to approve.');
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -318,7 +331,7 @@ const AdminLeaves = () => {
                       <td className="px-5 py-4">
                         {leave.status === 'PENDING' ? (
                           <div className="flex items-center gap-2">
-                            <button onClick={() => handleApprove(leave)}
+                            <button onClick={() => openApproveModal(leave)}
                               className="flex items-center gap-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500
                                          text-white text-xs rounded-lg transition-all font-medium">
                               <CheckCircle className="w-3 h-3" /> Approve
@@ -343,6 +356,59 @@ const AdminLeaves = () => {
           )}
         </div>
       </main>
+
+      {/* Approve Modal */}
+      {approveModal && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-md shadow-2xl">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800">
+              <h3 className="font-semibold text-white">Approve Leave Request</h3>
+              <button onClick={() => setApproveModal(null)}
+                className="text-slate-400 hover:text-white p-1 hover:bg-slate-800 rounded-lg transition-all">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="p-4 bg-slate-800 rounded-xl">
+                <p className="text-sm text-slate-300">
+                  Approving <span className="text-white font-semibold">{approveModal.user.name}</span>'s leave request for&nbsp;
+                  <span className="text-white font-semibold">{calcDays(approveModal.fromDate, approveModal.toDate)} day(s)</span>
+                </p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-300 mb-1.5">
+                  Leave Type
+                </label>
+                <select value={approveType} onChange={(e) => setApproveType(e.target.value)}
+                  className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl
+                             text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                  <option value="SL">SL — Sick Leave</option>
+                  <option value="CL">CL — Casual Leave</option>
+                  <option value="LOP">LOP — Loss of Pay</option>
+                  <option value="HD_LOP">HD-LOP — Half Day LOP</option>
+                  <option value="PL">PL — Privileged Leave</option>
+                </select>
+                {approveType !== approveModal.type && (
+                  <p className="text-xs text-amber-400 mt-1.5">
+                    Changing from {approveModal.type} to {approveType}
+                  </p>
+                )}
+              </div>
+              <div className="flex gap-3">
+                <button onClick={() => setApproveModal(null)}
+                  className="flex-1 py-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-sm transition-all">
+                  Cancel
+                </button>
+                <button onClick={handleApprove} disabled={submitting}
+                  className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50
+                             text-white rounded-xl text-sm font-semibold transition-all">
+                  {submitting ? 'Approving...' : 'Confirm Approve'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Reject Modal */}
       {rejectModal && (
