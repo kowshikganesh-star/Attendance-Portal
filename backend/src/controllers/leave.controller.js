@@ -137,8 +137,13 @@ export const getAllLeaves = async (req, res, next) => {
 
 export const approveLeave = async (req, res, next) => {
   try {
-    const { id }          = req.params;
-    const adminRemark     = req.body?.adminRemark || null;
+    const { id }      = req.params;
+    const adminRemark = req.body?.adminRemark || null;
+    const type        = req.body?.type || null;
+
+    if (type && !['SL', 'CL', 'LOP', 'HD_LOP', 'PL'].includes(type)) {
+      return res.status(400).json({ success: false, message: 'Invalid leave type.' });
+    }
 
     const leave = await prisma.leaveRequest.findUnique({ where: { id: parseInt(id) } });
 
@@ -157,6 +162,7 @@ export const approveLeave = async (req, res, next) => {
       where: { id: parseInt(id) },
       data: {
         status:      'APPROVED',
+        type:        type || leave.type,
         adminRemark: adminRemark,
         reviewedBy:  req.user.id,
         reviewedAt:  new Date(),
@@ -168,7 +174,7 @@ export const approveLeave = async (req, res, next) => {
 
     return res.status(200).json({
       success: true,
-      message: `Leave approved for ${updated.user.name}.`,
+      message: `Leave approved for ${updated.user.name}${type && type !== leave.type ? ` as ${type}` : ''}.`,
       leave:   updated,
     });
   } catch (err) {
