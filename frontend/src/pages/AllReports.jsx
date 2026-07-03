@@ -53,7 +53,50 @@ const groupByDay = (records) => {
     }
   });
 
-  return Object.values(grouped).sort(
+  return Object.values(grouped);
+};
+
+// ── Expand approved LOP / HD_LOP leaves into per-day rows for the selected month ──
+const expandLopDays = (leaves, month) => {
+  const days = [];
+
+  leaves.forEach((leave) => {
+    const cur = new Date(leave.fromDate);
+    cur.setHours(0, 0, 0, 0);
+    const end = new Date(leave.toDate);
+    end.setHours(0, 0, 0, 0);
+
+    while (cur <= end) {
+      const dateStr = cur.toLocaleDateString('en-CA');
+      if (dateStr.startsWith(month)) {
+        days.push({
+          key:           `${leave.user.id}_${dateStr}`,
+          userId:        leave.user.id,
+          name:          leave.user.name,
+          email:         leave.user.email,
+          date:          dateStr,
+          firstClockIn:  null,
+          lastClockOut:  null,
+          firstLocation: null,
+          totalMs:       0,
+          hasActive:     false,
+          attendance:    'LOP',
+        });
+      }
+      cur.setDate(cur.getDate() + 1);
+    }
+  });
+
+  return days;
+};
+
+// ── Merge attendance rows (marked 'P') with LOP-only rows, skipping duplicates ──
+const mergeAttendanceAndLop = (attendanceGrouped, lopDays) => {
+  const existingKeys = new Set(attendanceGrouped.map((g) => g.key));
+  const lopOnly       = lopDays.filter((d) => !existingKeys.has(d.key));
+  const withAttendance = attendanceGrouped.map((g) => ({ ...g, attendance: 'P' }));
+
+  return [...withAttendance, ...lopOnly].sort(
     (a, b) => new Date(b.date) - new Date(a.date)
   );
 };
@@ -68,6 +111,7 @@ const AllReports = () => {
   const [month,        setMonth]        = useState(currentMonth);
   const [selectedUser, setSelectedUser] = useState('');
   const [records,      setRecords]      = useState([]);
+  const [lopLeaves,    setLopLeaves]    = useState([]);
   const [employees,    setEmployees]    = useState([]);
   const [loading,      setLoading]      = useState(true);
 
@@ -78,9 +122,18 @@ const AllReports = () => {
       const params = { month };
       if (selectedUser) params.userId = selectedUser;
 
-      const { data } = await axios.get(`${API}/attendance/history/all`, { params });
-      setRecords(data.records);
-      setEmployees(data.employees);
+      const leaveParams = { status: 'APPROVED' };
+      if (selectedUser) leaveParams.userId = selectedUser;
+
+      const [attendanceRes, lopRes, hdLopRes] = await Promise.all([
+        axios.get(`${API}/attendance/history/all`, { params }),
+        axios.get(`${API}/leaves`, { params: { ...leaveParams, type: 'LOP' } }),
+        axios.get(`${API}/leaves`, { params: { ...leaveParams, type: 'HD_LOP' } }),
+      ]);
+
+      setRecords(attendanceRes.data.records);
+      setEmployees(attendanceRes.data.employees);
+      setLopLeaves([...lopRes.data.leaves, ...hdLopRes.data.leaves]);
     } catch {
       toast.error('Failed to load report.');
     } finally {
@@ -149,25 +202,27 @@ const AllReports = () => {
     };
 
     const headers = [
+      'Date',
       'Employee Name',
       'Email',
-      'Date',
       'First Clock In',
       'Last Clock Out',
+      'Attendance',
       'Total Duration',
       'Location',
       'Status',
     ];
 
     const rows = grouped.map((g) => [
+      fmtDateCSV(g.date),
       esc(g.name),
       esc(g.email),
-      fmtDateCSV(g.date),
-      fmtTimeCSV(g.firstClockIn),
-      g.lastClockOut ? fmtTimeCSV(g.lastClockOut) : 'Active',
-      fmtDurCSV(g.totalMs),
+      g.attendance === 'LOP' ? '—' : fmtTimeCSV(g.firstClockIn),
+      g.attendance === 'LOP' ? '—' : (g.lastClockOut ? fmtTimeCSV(g.lastClockOut) : 'Active'),
+      g.attendance,
+      g.attendance === 'LOP' ? '—' : fmtDurCSV(g.totalMs),
       esc(g.firstLocation || '—'),
-      g.hasActive ? 'Active' : 'Complete',
+      g.attendance === 'LOP' ? '—' : (g.hasActive ? 'Active' : 'Complete'),
     ].join(','));
 
     const csv  = [headers.join(','), ...rows].join('\n');
@@ -183,7 +238,7 @@ const AllReports = () => {
     toast.success('CSV downloaded!');
   };
 
-  const grouped = groupByDay(records);
+  const grouped = mergeAttendanceAndLop(groupByDay(records), expandLopDays(lopLeaves, month));
 
   // Summary stats
   const totalDays      = grouped.length;
@@ -318,6 +373,7 @@ const AllReports = () => {
                       'Date',
                       'First Clock In',
                       'Last Clock Out',
+                      'Attendance',
                       'Total Duration',
                       'Location',
                       'Status',
@@ -354,25 +410,44 @@ const AllReports = () => {
 
                       {/* First Clock In */}
                       <td className="px-5 py-4 text-sm font-medium text-emerald-400 whitespace-nowrap">
-                        🟢 {formatTime(g.firstClockIn)}
+                        {g.attendance === 'LOP'
+                          ? <span className="text-slate-600">—</span>
+                          : <>🟢 {formatTime(g.firstClockIn)}</>}
                       </td>
 
                       {/* Last Clock Out */}
                       <td className="px-5 py-4 text-sm text-slate-300 whitespace-nowrap">
-                        {g.hasActive
-                          ? <span className="text-amber-400">🟡 Active</span>
-                          : g.lastClockOut
-                            ? `🔴 ${formatTime(g.lastClockOut)}`
-                            : '—'}
+                        {g.attendance === 'LOP'
+                          ? <span className="text-slate-600">—</span>
+                          : g.hasActive
+                            ? <span className="text-amber-400">🟡 Active</span>
+                            : g.lastClockOut
+                              ? `🔴 ${formatTime(g.lastClockOut)}`
+                              : '—'}
+                      </td>
+
+                      {/* Attendance */}
+                      <td className="px-5 py-4">
+                        {g.attendance === 'LOP' ? (
+                          <span className="inline-flex items-center gap-1 text-xs bg-red-500/20 text-red-400 border border-red-500/30 px-2.5 py-1 rounded-full font-medium">
+                            LOP
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-xs bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-1 rounded-full font-medium">
+                            P
+                          </span>
+                        )}
                       </td>
 
                       {/* Total Duration */}
                       <td className="px-5 py-4">
                         <span className={`text-sm font-bold
                           ${g.totalMs > 0 ? 'text-white' : 'text-slate-500'}`}>
-                          {g.hasActive && g.totalMs === 0
-                            ? <span className="text-amber-400 text-xs font-normal">In progress</span>
-                            : formatMs(g.totalMs, true)}
+                          {g.attendance === 'LOP'
+                            ? <span className="text-slate-600">—</span>
+                            : g.hasActive && g.totalMs === 0
+                              ? <span className="text-amber-400 text-xs font-normal">In progress</span>
+                              : formatMs(g.totalMs, true)}
                         </span>
                       </td>
 
@@ -387,7 +462,9 @@ const AllReports = () => {
 
                       {/* Status */}
                       <td className="px-5 py-4">
-                        {g.hasActive ? (
+                        {g.attendance === 'LOP' ? (
+                          <span className="text-slate-600 text-xs">—</span>
+                        ) : g.hasActive ? (
                           <span className="inline-flex items-center gap-1 text-xs bg-amber-500/20 text-amber-400 border border-amber-500/30 px-2.5 py-1 rounded-full">
                             Active
                           </span>
