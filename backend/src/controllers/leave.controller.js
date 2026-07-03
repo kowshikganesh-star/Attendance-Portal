@@ -137,9 +137,9 @@ export const getAllLeaves = async (req, res, next) => {
 
 export const approveLeave = async (req, res, next) => {
   try {
-    const { id }      = req.params;
-    const adminRemark = req.body?.adminRemark || null;
-    const type        = req.body?.type || null;
+    const { id }        = req.params;
+    const userRemark    = req.body?.adminRemark?.trim() || null;
+    const type          = req.body?.type || null;
 
     if (type && !['SL', 'CL', 'LOP', 'HD_LOP', 'PL'].includes(type)) {
       return res.status(400).json({ success: false, message: 'Invalid leave type.' });
@@ -157,6 +157,13 @@ export const approveLeave = async (req, res, next) => {
         message: `Leave is already ${leave.status.toLowerCase()}.`,
       });
     }
+
+    const typeChanged = type && type !== leave.type;
+    const changeNote   = typeChanged
+      ? `Changed from ${leave.type} to ${type} by admin.`
+      : null;
+
+    const adminRemark = [changeNote, userRemark].filter(Boolean).join(' ') || null;
 
     const updated = await prisma.leaveRequest.update({
       where: { id: parseInt(id) },
