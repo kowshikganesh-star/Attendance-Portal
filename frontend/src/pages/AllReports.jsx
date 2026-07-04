@@ -6,7 +6,7 @@ import { useNavigate } from 'react-router-dom';
 import toast, { Toaster } from 'react-hot-toast';
 import {
   ShieldCheck, LogOut, ArrowLeft,
-  Download, Calendar, Filter, TrendingUp, X,
+  Download, Calendar, Filter, TrendingUp, X, FileSpreadsheet,
 } from 'lucide-react';
 
 const API = import.meta.env.VITE_API_URL;
@@ -279,6 +279,52 @@ const AllReports = () => {
     toast.success('CSV downloaded!');
   };
 
+  // ── Monthly Summary Export (pivot: employee rows × day columns, p/lop/blank) ──
+  const exportMonthlyPivotCSV = () => {
+    const dates = getDatesToEnumerate(fetchMonth, ''); // full month, ignoring the date filter
+
+    if (dates.length === 0) {
+      toast.error('No days to export for this month.');
+      return;
+    }
+
+    const filteredEmployees = selectedUser
+      ? employees.filter((e) => e.id === parseInt(selectedUser))
+      : employees;
+
+    const esc = (val) => {
+      const str = String(val ?? '');
+      return str.includes(',') ? `"${str.replace(/"/g, '""')}"` : str;
+    };
+
+    const dayNumbers = dates.map((d) => parseInt(d.slice(8, 10), 10));
+    const headers     = ['Employee Name', ...dayNumbers];
+
+    const rows = filteredEmployees.map((emp) => {
+      const cells = dates.map((date) => {
+        const key = `${emp.id}_${date}`;
+        if (attendanceByKey[key]) return 'p';
+        const onLeave = lopLeaves.some(
+          (leave) => leave.user.id === emp.id && leaveCoversDate(leave, date)
+        );
+        return onLeave ? 'lop' : '';
+      });
+      return [esc(emp.name), ...cells].join(',');
+    });
+
+    const csv  = [headers.join(','), ...rows].join('\n');
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url  = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href  = url;
+    link.setAttribute('download', `monthly_summary_${fetchMonth}${selectedUser ? `_emp${selectedUser}` : ''}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+    toast.success('Monthly summary CSV downloaded!');
+  };
+
   const attendanceByKey = groupByDay(records);
   const datesToShow     = getDatesToEnumerate(fetchMonth, selectedDate);
   const grouped         = buildReportRows(attendanceByKey, lopLeaves, employees, datesToShow, selectedUser);
@@ -344,14 +390,24 @@ const AllReports = () => {
               </p>
             </div>
           </div>
-          <button onClick={exportCSV} disabled={grouped.length === 0}
-            className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500
-                       disabled:opacity-50 disabled:cursor-not-allowed
-                       text-white px-4 py-2.5 rounded-xl text-sm font-semibold
-                       transition-all shadow-lg shadow-indigo-600/20">
-            <Download className="w-4 h-4" />
-            Export CSV
-          </button>
+          <div className="flex items-center gap-3">
+            <button onClick={exportMonthlyPivotCSV} disabled={employees.length === 0}
+              className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700
+                         disabled:opacity-50 disabled:cursor-not-allowed
+                         text-white px-4 py-2.5 rounded-xl text-sm font-semibold
+                         transition-all border border-slate-700">
+              <FileSpreadsheet className="w-4 h-4" />
+              Monthly Summary
+            </button>
+            <button onClick={exportCSV} disabled={grouped.length === 0}
+              className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500
+                         disabled:opacity-50 disabled:cursor-not-allowed
+                         text-white px-4 py-2.5 rounded-xl text-sm font-semibold
+                         transition-all shadow-lg shadow-indigo-600/20">
+              <Download className="w-4 h-4" />
+              Export CSV
+            </button>
+          </div>
         </div>
 
         {/* Filters */}
