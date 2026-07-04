@@ -208,9 +208,9 @@ const AllReports = () => {
       'First Clock In',
       'Last Clock Out',
       'Attendance',
+      'Status',
       'Total Duration',
       'Location',
-      'Status',
     ];
 
     const rows = grouped.map((g) => [
@@ -220,9 +220,9 @@ const AllReports = () => {
       g.attendance === 'LOP' ? '—' : fmtTimeCSV(g.firstClockIn),
       g.attendance === 'LOP' ? '—' : (g.lastClockOut ? fmtTimeCSV(g.lastClockOut) : 'Active'),
       g.attendance,
+      g.attendance === 'LOP' ? '—' : (g.hasActive ? 'Active' : 'Complete'),
       g.attendance === 'LOP' ? '—' : fmtDurCSV(g.totalMs),
       esc(g.firstLocation || '—'),
-      g.attendance === 'LOP' ? '—' : (g.hasActive ? 'Active' : 'Complete'),
     ].join(','));
 
     const csv  = [headers.join(','), ...rows].join('\n');
