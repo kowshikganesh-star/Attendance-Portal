@@ -293,7 +293,11 @@ const AllReports = () => {
       ? employees.filter((e) => e.id === parseInt(selectedUser))
       : employees;
 
-    const dayNumbers = dates.map((d) => parseInt(d.slice(8, 10), 10));
+    const dayNumbers  = dates.map((d) => parseInt(d.slice(8, 10), 10));
+    const isWeekendCol = dates.map((d) => {
+      const day = new Date(d + 'T00:00:00').getDay(); // 0 = Sun, 6 = Sat
+      return day === 0 || day === 6;
+    });
 
     const workbook = new ExcelJS.Workbook();
     const sheet     = workbook.addWorksheet('Monthly Summary');
@@ -307,9 +311,13 @@ const AllReports = () => {
 
     // Header row
     const headerRow = sheet.addRow(['Employee Name', ...dayNumbers]);
-    headerRow.eachCell((cell) => {
+    headerRow.eachCell((cell, colNumber) => {
+      const isWeekend = colNumber > 1 && isWeekendCol[colNumber - 2];
       cell.font      = { bold: true, color: { argb: 'FFFFFFFF' } };
-      cell.fill       = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4F46E5' } };
+      cell.fill       = {
+        type: 'pattern', pattern: 'solid',
+        fgColor: { argb: isWeekend ? 'FF2563EB' : 'FF4F46E5' }, // blue-600 for weekends, indigo-600 otherwise
+      };
       cell.alignment  = { horizontal: 'center', vertical: 'middle' };
       cell.border     = thinBorder('FF334155');
     });
@@ -334,11 +342,15 @@ const AllReports = () => {
       row.getCell(1).border    = thinBorder('FFE2E8F0');
 
       for (let i = 2; i <= cells.length + 1; i++) {
-        const cell = row.getCell(i);
-        cell.alignment = { horizontal: 'center', vertical: 'middle' };
-        cell.border    = thinBorder('FFE2E8F0');
+        const cell      = row.getCell(i);
+        const isWeekend = isWeekendCol[i - 2];
+        cell.alignment  = { horizontal: 'center', vertical: 'middle' };
+        cell.border     = thinBorder('FFE2E8F0');
 
-        if (cell.value === 'p') {
+        if (isWeekend) {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDCEAFB' } }; // blue-100
+          cell.font = { color: { argb: 'FF1D4ED8' }, bold: true }; // blue-700
+        } else if (cell.value === 'p') {
           cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD1FAE5' } };
           cell.font = { color: { argb: 'FF047857' }, bold: true };
         } else if (cell.value === 'lop') {
