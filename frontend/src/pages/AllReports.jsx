@@ -6,17 +6,19 @@ import { useNavigate } from 'react-router-dom';
 import toast, { Toaster } from 'react-hot-toast';
 import {
   ShieldCheck, LogOut, ArrowLeft,
-  Download, Calendar, Filter, TrendingUp,
+  Download, Calendar, Filter, TrendingUp, X,
 } from 'lucide-react';
 
 const API = import.meta.env.VITE_API_URL;
 
-// ── Group raw records by employee + date ──────────────────
+const toDateStr = (d) => new Date(d).toLocaleDateString('en-CA');
+
+// ── Group raw attendance records by employee + date, keyed for fast lookup ──
 const groupByDay = (records) => {
   const grouped = {};
 
   records.forEach((record) => {
-    const date = new Date(record.clockIn).toLocaleDateString('en-CA');
+    const date = toDateStr(record.clockIn);
     const key  = `${record.userId}_${date}`;
 
     if (!grouped[key]) {
@@ -53,51 +55,85 @@ const groupByDay = (records) => {
     }
   });
 
-  return Object.values(grouped);
+  return grouped; // keyed object: `${userId}_${date}` -> row
 };
 
-// ── Expand approved LOP / HD_LOP leaves into per-day rows for the selected month ──
-const expandLopDays = (leaves, month) => {
-  const days = [];
+// ── Which calendar dates should we produce rows for? Never enumerates future dates ──
+const getDatesToEnumerate = (fetchMonth, selectedDate) => {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
 
-  leaves.forEach((leave) => {
-    const cur = new Date(leave.fromDate);
-    cur.setHours(0, 0, 0, 0);
-    const end = new Date(leave.toDate);
-    end.setHours(0, 0, 0, 0);
+  if (selectedDate) {
+    const d = new Date(selectedDate + 'T00:00:00');
+    return d > today ? [] : [selectedDate];
+  }
 
-    while (cur <= end) {
-      const dateStr = cur.toLocaleDateString('en-CA');
-      if (dateStr.startsWith(month)) {
-        days.push({
-          key:           `${leave.user.id}_${dateStr}`,
-          userId:        leave.user.id,
-          name:          leave.user.name,
-          email:         leave.user.email,
-          date:          dateStr,
-          firstClockIn:  null,
-          lastClockOut:  null,
-          firstLocation: null,
-          totalMs:       0,
-          hasActive:     false,
-          attendance:    'LOP',
-        });
+  const [year, mon] = fetchMonth.split('-').map(Number);
+  const daysInMonth   = new Date(year, mon, 0).getDate();
+  const isFutureMonth = new Date(year, mon - 1, 1) > today;
+  if (isFutureMonth) return [];
+
+  const isCurrentMonth = year === today.getFullYear() && mon === today.getMonth() + 1;
+  const lastDay = isCurrentMonth ? today.getDate() : daysInMonth;
+
+  const dates = [];
+  for (let day = 1; day <= lastDay; day++) {
+    dates.push(`${year}-${String(mon).padStart(2, '0')}-${String(day).padStart(2, '0')}`);
+  }
+  return dates;
+};
+
+// ── Does this leave cover this date? ───────────────────────
+const leaveCoversDate = (leave, dateStr) => {
+  const from = new Date(leave.fromDate); from.setHours(0, 0, 0, 0);
+  const to   = new Date(leave.toDate);   to.setHours(0, 0, 0, 0);
+  const d    = new Date(dateStr + 'T00:00:00');
+  return d >= from && d <= to;
+};
+
+// ── Build one row per employee per date ────────────────────
+// P    = clocked in that day
+// LOP  = no clock-in, but an approved LOP/HD_LOP leave covers that day
+// ''   = no clock-in and no leave (did not sign in) — row stays, fields blank
+const buildReportRows = (attendanceByKey, lopLeaves, employees, dates, selectedUser) => {
+  const filteredEmployees = selectedUser
+    ? employees.filter((e) => e.id === parseInt(selectedUser))
+    : employees;
+
+  const rows = [];
+
+  dates.forEach((date) => {
+    filteredEmployees.forEach((emp) => {
+      const key = `${emp.id}_${date}`;
+      const attendanceRow = attendanceByKey[key];
+
+      if (attendanceRow) {
+        rows.push({ ...attendanceRow, attendance: 'P' });
+        return;
       }
-      cur.setDate(cur.getDate() + 1);
-    }
+
+      const onLeave = lopLeaves.some(
+        (leave) => leave.user.id === emp.id && leaveCoversDate(leave, date)
+      );
+
+      rows.push({
+        key,
+        userId:        emp.id,
+        name:          emp.name,
+        email:         emp.email,
+        date,
+        firstClockIn:  null,
+        lastClockOut:  null,
+        firstLocation: null,
+        totalMs:       0,
+        hasActive:     false,
+        attendance:    onLeave ? 'LOP' : '',
+      });
+    });
   });
 
-  return days;
-};
-
-// ── Merge attendance rows (marked 'P') with LOP-only rows, skipping duplicates ──
-const mergeAttendanceAndLop = (attendanceGrouped, lopDays) => {
-  const existingKeys = new Set(attendanceGrouped.map((g) => g.key));
-  const lopOnly       = lopDays.filter((d) => !existingKeys.has(d.key));
-  const withAttendance = attendanceGrouped.map((g) => ({ ...g, attendance: 'P' }));
-
-  return [...withAttendance, ...lopOnly].sort(
-    (a, b) => new Date(b.date) - new Date(a.date)
+  return rows.sort(
+    (a, b) => new Date(b.date) - new Date(a.date) || a.name.localeCompare(b.name)
   );
 };
 
@@ -105,21 +141,25 @@ const AllReports = () => {
   const { user, logout } = useAuth();
   const navigate         = useNavigate();
 
-  const now          = new Date();
-  const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const today        = toDateStr(new Date());
+  const currentMonth  = today.slice(0, 7);
 
   const [month,        setMonth]        = useState(currentMonth);
+  const [selectedDate, setSelectedDate] = useState(''); // optional — overrides month when set
   const [selectedUser, setSelectedUser] = useState('');
   const [records,      setRecords]      = useState([]);
   const [lopLeaves,    setLopLeaves]    = useState([]);
   const [employees,    setEmployees]    = useState([]);
   const [loading,      setLoading]      = useState(true);
 
+  // The month we actually need attendance data for
+  const fetchMonth = selectedDate ? selectedDate.slice(0, 7) : month;
+
   // ── Fetch records ─────────────────────────────────────────
   const fetchRecords = useCallback(async () => {
     setLoading(true);
     try {
-      const params = { month };
+      const params = { month: fetchMonth };
       if (selectedUser) params.userId = selectedUser;
 
       const leaveParams = { status: 'APPROVED' };
@@ -139,7 +179,7 @@ const AllReports = () => {
     } finally {
       setLoading(false);
     }
-  }, [month, selectedUser]);
+  }, [fetchMonth, selectedUser]);
 
   useEffect(() => { fetchRecords(); }, [fetchRecords]);
 
@@ -153,10 +193,10 @@ const AllReports = () => {
   const formatDate = (dateStr) => {
     const d     = new Date(dateStr + 'T00:00:00');
     const day   = String(d.getDate()).padStart(2, '0');
-    const month = d.toLocaleString('en-US', { month: 'short' });
+    const mon   = d.toLocaleString('en-US', { month: 'short' });
     const year  = d.getFullYear();
     const week  = d.toLocaleString('en-US', { weekday: 'short' });
-    return `${week} ${day} ${month} ${year}`;
+    return `${week} ${day} ${mon} ${year}`;
   };
 
   const formatMs = (ms, showSeconds = false) => {
@@ -184,17 +224,17 @@ const AllReports = () => {
       ? new Date(d).toLocaleTimeString('en-US', {
           hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true,
         })
-      : '—';
+      : '';
 
     const fmtDateCSV = (dateStr) => {
-      const d     = new Date(dateStr + 'T00:00:00');
-      const day   = String(d.getDate()).padStart(2, '0');
-      const month = d.toLocaleString('en-US', { month: 'short' });
-      return `${day} ${month} ${d.getFullYear()}`;
+      const d   = new Date(dateStr + 'T00:00:00');
+      const day = String(d.getDate()).padStart(2, '0');
+      const mon = d.toLocaleString('en-US', { month: 'short' });
+      return `${day} ${mon} ${d.getFullYear()}`;
     };
 
     const fmtDurCSV = (ms) => {
-      if (!ms || ms <= 0) return '0h 0m 0s';
+      if (!ms || ms <= 0) return '';
       const h = Math.floor(ms / 3600000);
       const m = Math.floor((ms % 3600000) / 60000);
       const s = Math.floor((ms % 60000) / 1000);
@@ -217,12 +257,12 @@ const AllReports = () => {
       fmtDateCSV(g.date),
       esc(g.name),
       esc(g.email),
-      g.attendance === 'LOP' ? '—' : fmtTimeCSV(g.firstClockIn),
-      g.attendance === 'LOP' ? '—' : (g.lastClockOut ? fmtTimeCSV(g.lastClockOut) : 'Active'),
-      g.attendance,
-      g.attendance === 'LOP' ? '—' : (g.hasActive ? 'Active' : 'Complete'),
-      g.attendance === 'LOP' ? '—' : fmtDurCSV(g.totalMs),
-      esc(g.firstLocation || '—'),
+      g.attendance === 'P' ? fmtTimeCSV(g.firstClockIn) : '',
+      g.attendance === 'P' ? (g.lastClockOut ? fmtTimeCSV(g.lastClockOut) : 'Active') : '',
+      g.attendance, // 'P', 'LOP', or blank
+      g.attendance === 'P' ? (g.hasActive ? 'Active' : 'Complete') : '',
+      g.attendance === 'P' ? fmtDurCSV(g.totalMs) : '',
+      g.attendance === 'P' ? esc(g.firstLocation || '—') : '',
     ].join(','));
 
     const csv  = [headers.join(','), ...rows].join('\n');
@@ -230,7 +270,8 @@ const AllReports = () => {
     const url  = window.URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href  = url;
-    link.setAttribute('download', `report_${month}${selectedUser ? `_emp${selectedUser}` : ''}.csv`);
+    const filenameTag = selectedDate || month;
+    link.setAttribute('download', `report_${filenameTag}${selectedUser ? `_emp${selectedUser}` : ''}.csv`);
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -238,7 +279,9 @@ const AllReports = () => {
     toast.success('CSV downloaded!');
   };
 
-  const grouped = mergeAttendanceAndLop(groupByDay(records), expandLopDays(lopLeaves, month));
+  const attendanceByKey = groupByDay(records);
+  const datesToShow     = getDatesToEnumerate(fetchMonth, selectedDate);
+  const grouped         = buildReportRows(attendanceByKey, lopLeaves, employees, datesToShow, selectedUser);
 
   // Summary stats
   const totalDays      = grouped.length;
@@ -249,6 +292,14 @@ const AllReports = () => {
   const monthLabel = new Date(month + '-01').toLocaleDateString('en-US', {
     month: 'long', year: 'numeric',
   });
+
+  const dateLabel = selectedDate
+    ? new Date(selectedDate + 'T00:00:00').toLocaleDateString('en-US', {
+        weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+      })
+    : null;
+
+  const rangeLabel = dateLabel || monthLabel;
 
   return (
     <div className="min-h-screen bg-slate-950 text-white">
@@ -286,7 +337,7 @@ const AllReports = () => {
             <div>
               <h1 className="text-2xl font-bold">Attendance Reports</h1>
               <p className="text-slate-400 text-sm">
-                Daily records — {monthLabel}
+                Daily records — {rangeLabel}
                 {selectedUser && employees.find(e => e.id === parseInt(selectedUser))
                   ? ` — ${employees.find(e => e.id === parseInt(selectedUser)).name}`
                   : ''}
@@ -311,9 +362,26 @@ const AllReports = () => {
           </div>
           <div className="flex flex-wrap gap-3 items-center">
             <input type="month" value={month}
+              disabled={!!selectedDate}
               onChange={(e) => setMonth(e.target.value)}
               className="px-4 py-2 bg-slate-800 border border-slate-700 rounded-xl
-                         text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                         text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500
+                         disabled:opacity-50" />
+
+            <div className="flex items-center gap-2">
+              <input type="date" value={selectedDate}
+                onChange={(e) => setSelectedDate(e.target.value)}
+                className="px-4 py-2 bg-slate-800 border border-slate-700 rounded-xl
+                           text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+              {selectedDate && (
+                <button onClick={() => setSelectedDate('')}
+                  className="p-2 bg-slate-800 hover:bg-slate-700 rounded-xl text-slate-400 hover:text-white transition-all"
+                  title="Clear date — back to month view">
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+
             <select value={selectedUser}
               onChange={(e) => setSelectedUser(e.target.value)}
               className="px-4 py-2 bg-slate-800 border border-slate-700 rounded-xl
@@ -361,7 +429,7 @@ const AllReports = () => {
           ) : grouped.length === 0 ? (
             <div className="text-center py-12 text-slate-500">
               <Calendar className="w-10 h-10 mx-auto mb-2 opacity-30" />
-              <p>No records found for {monthLabel}.</p>
+              <p>No records found for {rangeLabel}.</p>
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -410,14 +478,14 @@ const AllReports = () => {
 
                       {/* First Clock In */}
                       <td className="px-5 py-4 text-sm font-medium text-emerald-400 whitespace-nowrap">
-                        {g.attendance === 'LOP'
-                          ? <span className="text-slate-600">—</span>
-                          : <>🟢 {formatTime(g.firstClockIn)}</>}
+                        {g.attendance === 'P'
+                          ? <>🟢 {formatTime(g.firstClockIn)}</>
+                          : <span className="text-slate-600">—</span>}
                       </td>
 
                       {/* Last Clock Out */}
                       <td className="px-5 py-4 text-sm text-slate-300 whitespace-nowrap">
-                        {g.attendance === 'LOP'
+                        {g.attendance !== 'P'
                           ? <span className="text-slate-600">—</span>
                           : g.hasActive
                             ? <span className="text-amber-400">🟡 Active</span>
@@ -428,14 +496,16 @@ const AllReports = () => {
 
                       {/* Attendance */}
                       <td className="px-5 py-4">
-                        {g.attendance === 'LOP' ? (
+                        {g.attendance === 'P' ? (
+                          <span className="inline-flex items-center gap-1 text-xs bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-1 rounded-full font-medium">
+                            P
+                          </span>
+                        ) : g.attendance === 'LOP' ? (
                           <span className="inline-flex items-center gap-1 text-xs bg-red-500/20 text-red-400 border border-red-500/30 px-2.5 py-1 rounded-full font-medium">
                             LOP
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1 text-xs bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-1 rounded-full font-medium">
-                            P
-                          </span>
+                          <span className="text-slate-600 text-xs">—</span>
                         )}
                       </td>
 
@@ -443,7 +513,7 @@ const AllReports = () => {
                       <td className="px-5 py-4">
                         <span className={`text-sm font-bold
                           ${g.totalMs > 0 ? 'text-white' : 'text-slate-500'}`}>
-                          {g.attendance === 'LOP'
+                          {g.attendance !== 'P'
                             ? <span className="text-slate-600">—</span>
                             : g.hasActive && g.totalMs === 0
                               ? <span className="text-amber-400 text-xs font-normal">In progress</span>
@@ -453,7 +523,7 @@ const AllReports = () => {
 
                       {/* Location */}
                       <td className="px-5 py-4 text-sm text-slate-400 max-w-xs">
-                        {g.firstLocation
+                        {g.attendance === 'P' && g.firstLocation
                           ? <span className="truncate block max-w-48" title={g.firstLocation}>
                               📍 {g.firstLocation}
                             </span>
@@ -462,7 +532,7 @@ const AllReports = () => {
 
                       {/* Status */}
                       <td className="px-5 py-4">
-                        {g.attendance === 'LOP' ? (
+                        {g.attendance !== 'P' ? (
                           <span className="text-slate-600 text-xs">—</span>
                         ) : g.hasActive ? (
                           <span className="inline-flex items-center gap-1 text-xs bg-amber-500/20 text-amber-400 border border-amber-500/30 px-2.5 py-1 rounded-full">
