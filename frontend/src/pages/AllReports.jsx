@@ -4,6 +4,7 @@ import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import toast, { Toaster } from 'react-hot-toast';
+import ExcelJS from 'exceljs';
 import {
   ShieldCheck, LogOut, ArrowLeft,
   Download, Calendar, Filter, TrendingUp, X, FileSpreadsheet,
@@ -279,8 +280,8 @@ const AllReports = () => {
     toast.success('CSV downloaded!');
   };
 
-  // ── Monthly Summary Export (pivot: employee rows × day columns, p/lop/blank) ──
-  const exportMonthlyPivotCSV = () => {
+  // ── Monthly Summary Export (styled .xlsx: employee rows × day columns) ──
+  const exportMonthlySummaryXLSX = async () => {
     const dates = getDatesToEnumerate(fetchMonth, ''); // full month, ignoring the date filter
 
     if (dates.length === 0) {
@@ -292,15 +293,31 @@ const AllReports = () => {
       ? employees.filter((e) => e.id === parseInt(selectedUser))
       : employees;
 
-    const esc = (val) => {
-      const str = String(val ?? '');
-      return str.includes(',') ? `"${str.replace(/"/g, '""')}"` : str;
-    };
-
     const dayNumbers = dates.map((d) => parseInt(d.slice(8, 10), 10));
-    const headers     = ['Employee Name', ...dayNumbers];
 
-    const rows = filteredEmployees.map((emp) => {
+    const workbook = new ExcelJS.Workbook();
+    const sheet     = workbook.addWorksheet('Monthly Summary');
+
+    const thinBorder = (color) => ({
+      top:    { style: 'thin', color: { argb: color } },
+      left:   { style: 'thin', color: { argb: color } },
+      bottom: { style: 'thin', color: { argb: color } },
+      right:  { style: 'thin', color: { argb: color } },
+    });
+
+    // Header row
+    const headerRow = sheet.addRow(['Employee Name', ...dayNumbers]);
+    headerRow.eachCell((cell) => {
+      cell.font      = { bold: true, color: { argb: 'FFFFFFFF' } };
+      cell.fill       = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4F46E5' } };
+      cell.alignment  = { horizontal: 'center', vertical: 'middle' };
+      cell.border     = thinBorder('FF334155');
+    });
+    headerRow.getCell(1).alignment = { horizontal: 'left', vertical: 'middle' };
+    headerRow.height = 22;
+
+    // Data rows
+    filteredEmployees.forEach((emp) => {
       const cells = dates.map((date) => {
         const key = `${emp.id}_${date}`;
         if (attendanceByKey[key]) return 'p';
@@ -309,20 +326,50 @@ const AllReports = () => {
         );
         return onLeave ? 'lop' : '';
       });
-      return [esc(emp.name), ...cells].join(',');
+
+      const row = sheet.addRow([emp.name, ...cells]);
+
+      row.getCell(1).font      = { bold: true };
+      row.getCell(1).alignment = { horizontal: 'left', vertical: 'middle' };
+      row.getCell(1).border    = thinBorder('FFE2E8F0');
+
+      for (let i = 2; i <= cells.length + 1; i++) {
+        const cell = row.getCell(i);
+        cell.alignment = { horizontal: 'center', vertical: 'middle' };
+        cell.border    = thinBorder('FFE2E8F0');
+
+        if (cell.value === 'p') {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD1FAE5' } };
+          cell.font = { color: { argb: 'FF047857' }, bold: true };
+        } else if (cell.value === 'lop') {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } };
+          cell.font = { color: { argb: 'FFB91C1C' }, bold: true };
+        }
+      }
     });
 
-    const csv  = [headers.join(','), ...rows].join('\n');
-    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+    // Column widths
+    sheet.getColumn(1).width = 26;
+    for (let i = 2; i <= dayNumbers.length + 1; i++) {
+      sheet.getColumn(i).width = 6;
+    }
+
+    // Freeze header row + employee name column
+    sheet.views = [{ state: 'frozen', xSplit: 1, ySplit: 1 }];
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob   = new Blob([buffer], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    });
     const url  = window.URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href  = url;
-    link.setAttribute('download', `monthly_summary_${fetchMonth}${selectedUser ? `_emp${selectedUser}` : ''}.csv`);
+    link.setAttribute('download', `monthly_summary_${fetchMonth}${selectedUser ? `_emp${selectedUser}` : ''}.xlsx`);
     document.body.appendChild(link);
     link.click();
     link.remove();
     window.URL.revokeObjectURL(url);
-    toast.success('Monthly summary CSV downloaded!');
+    toast.success('Monthly summary Excel downloaded!');
   };
 
   const attendanceByKey = groupByDay(records);
@@ -391,7 +438,7 @@ const AllReports = () => {
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <button onClick={exportMonthlyPivotCSV} disabled={employees.length === 0}
+            <button onClick={exportMonthlySummaryXLSX} disabled={employees.length === 0}
               className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700
                          disabled:opacity-50 disabled:cursor-not-allowed
                          text-white px-4 py-2.5 rounded-xl text-sm font-semibold
