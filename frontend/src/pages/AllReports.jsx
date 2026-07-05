@@ -310,9 +310,9 @@ const AllReports = () => {
     });
 
     // Header row
-    const headerRow = sheet.addRow(['Employee Name', ...dayNumbers]);
+    const headerRow = sheet.addRow(['#', 'Employee Name', ...dayNumbers]);
     headerRow.eachCell((cell, colNumber) => {
-      const isWeekend = colNumber > 1 && isWeekendCol[colNumber - 2];
+      const isWeekend = colNumber > 2 && isWeekendCol[colNumber - 3];
       cell.font      = { bold: true, color: { argb: 'FFFFFFFF' } };
       cell.fill       = {
         type: 'pattern', pattern: 'solid',
@@ -321,14 +321,14 @@ const AllReports = () => {
       cell.alignment  = { horizontal: 'center', vertical: 'middle' };
       cell.border     = thinBorder('FF334155');
     });
-    headerRow.getCell(1).alignment = { horizontal: 'left', vertical: 'middle' };
+    headerRow.getCell(2).alignment = { horizontal: 'left', vertical: 'middle' };
     headerRow.height = 22;
 
     // Data rows
     const todayStr = toDateStr(new Date());
 
-    filteredEmployees.forEach((emp) => {
-      const cells = dates.map((date, idx) => {
+    filteredEmployees.forEach((emp, idx) => {
+      const cells = dates.map((date, dIdx) => {
         const key = `${emp.id}_${date}`;
         if (attendanceByKey[key]) return 'p';
 
@@ -338,21 +338,25 @@ const AllReports = () => {
         if (onLeave) return 'lop';
 
         const isToday   = date === todayStr;
-        const isWeekend = isWeekendCol[idx];
+        const isWeekend = isWeekendCol[dIdx];
 
         if (isToday || isWeekend) return ''; // pending today, or a non-workday weekend
         return 'lop'; // past weekday, no clock-in, no leave — absent
       });
 
-      const row = sheet.addRow([emp.name, ...cells]);
+      const row = sheet.addRow([idx + 1, emp.name, ...cells]);
 
       row.getCell(1).font      = { bold: true };
-      row.getCell(1).alignment = { horizontal: 'left', vertical: 'middle' };
+      row.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' };
       row.getCell(1).border    = thinBorder('FFE2E8F0');
 
-      for (let i = 2; i <= cells.length + 1; i++) {
+      row.getCell(2).font      = { bold: true };
+      row.getCell(2).alignment = { horizontal: 'left', vertical: 'middle' };
+      row.getCell(2).border    = thinBorder('FFE2E8F0');
+
+      for (let i = 3; i <= cells.length + 2; i++) {
         const cell      = row.getCell(i);
-        const isWeekend = isWeekendCol[i - 2];
+        const isWeekend = isWeekendCol[i - 3];
         cell.alignment  = { horizontal: 'center', vertical: 'middle' };
         cell.border     = thinBorder('FFE2E8F0');
 
@@ -370,13 +374,14 @@ const AllReports = () => {
     });
 
     // Column widths
-    sheet.getColumn(1).width = 26;
-    for (let i = 2; i <= dayNumbers.length + 1; i++) {
+    sheet.getColumn(1).width = 6;
+    sheet.getColumn(2).width = 26;
+    for (let i = 3; i <= dayNumbers.length + 2; i++) {
       sheet.getColumn(i).width = 6;
     }
 
-    // Freeze header row + employee name column
-    sheet.views = [{ state: 'frozen', xSplit: 1, ySplit: 1 }];
+    // Freeze header row + first two columns (serial number + employee name)
+    sheet.views = [{ state: 'frozen', xSplit: 2, ySplit: 1 }];
 
     const buffer = await workbook.xlsx.writeBuffer();
     const blob   = new Blob([buffer], {
