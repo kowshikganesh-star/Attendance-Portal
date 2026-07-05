@@ -299,6 +299,11 @@ const AllReports = () => {
       return day === 0 || day === 6;
     });
 
+    const totalCols  = 2 + dates.length;
+    const monthTitle = new Date(fetchMonth + '-01').toLocaleDateString('en-US', {
+      month: 'long', year: 'numeric',
+    });
+
     const workbook = new ExcelJS.Workbook();
     const sheet     = workbook.addWorksheet('Monthly Summary');
 
@@ -309,20 +314,36 @@ const AllReports = () => {
       right:  { style: 'thin', color: { argb: color } },
     });
 
-    // Header row
-    const headerRow = sheet.addRow(['#', 'Employee Name', ...dayNumbers]);
+    // Title row
+    const titleRow = sheet.addRow([`Attendance Summary — ${monthTitle}`]);
+    sheet.mergeCells(titleRow.number, 1, titleRow.number, totalCols);
+    titleRow.height = 26;
+    const titleCell = titleRow.getCell(1);
+    titleCell.font      = { bold: true, size: 13, color: { argb: 'FFFFFFFF' } };
+    titleCell.fill       = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF312E81' } }; // indigo-900
+    titleCell.alignment  = { horizontal: 'center', vertical: 'middle' };
+
+    // Header row — each date column shows day number + weekday on two lines
+    const headerRow = sheet.addRow(['#', 'Employee Name', ...dates.map((d) => {
+      const dt      = new Date(d + 'T00:00:00');
+      const dayNum  = String(dt.getDate()).padStart(2, '0');
+      const weekday = dt.toLocaleDateString('en-US', { weekday: 'short' });
+      return `${dayNum}\n${weekday}`;
+    })]);
     headerRow.eachCell((cell, colNumber) => {
       const isWeekend = colNumber > 2 && isWeekendCol[colNumber - 3];
-      cell.font      = { bold: true, color: { argb: 'FFFFFFFF' } };
+      cell.font      = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
       cell.fill       = {
         type: 'pattern', pattern: 'solid',
         fgColor: { argb: isWeekend ? 'FF2563EB' : 'FF4F46E5' }, // blue-600 for weekends, indigo-600 otherwise
       };
-      cell.alignment  = { horizontal: 'center', vertical: 'middle' };
+      cell.alignment  = { horizontal: 'center', vertical: 'middle', wrapText: true };
       cell.border     = thinBorder('FF334155');
     });
+    headerRow.getCell(1).font      = { bold: true, color: { argb: 'FFFFFFFF' } };
+    headerRow.getCell(2).font      = { bold: true, color: { argb: 'FFFFFFFF' } };
     headerRow.getCell(2).alignment = { horizontal: 'left', vertical: 'middle' };
-    headerRow.height = 22;
+    headerRow.height = 30;
 
     // Data rows
     const todayStr = toDateStr(new Date());
@@ -380,8 +401,8 @@ const AllReports = () => {
       sheet.getColumn(i).width = 6;
     }
 
-    // Freeze header row + first two columns (serial number + employee name)
-    sheet.views = [{ state: 'frozen', xSplit: 2, ySplit: 1 }];
+    // Freeze title row + header row + first two columns (serial number + employee name)
+    sheet.views = [{ state: 'frozen', xSplit: 2, ySplit: 2 }];
 
     const buffer = await workbook.xlsx.writeBuffer();
     const blob   = new Blob([buffer], {
