@@ -385,11 +385,13 @@ const AllReports = () => {
           cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDCEAFB' } }; // blue-100
           cell.font = { color: { argb: 'FF1D4ED8' }, bold: true }; // blue-700
         } else if (cell.value === 'P') {
-          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD1FAE5' } };
-          cell.font = { color: { argb: 'FF047857' }, bold: true };
+          cell.fill   = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD1FAE5' } };
+          cell.font   = { color: { argb: 'FF047857' }, bold: true };
+          cell.border = thinBorder('FF334155'); // dark border for P cells
         } else if (cell.value === 'LOP') {
-          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } };
-          cell.font = { color: { argb: 'FFB91C1C' }, bold: true };
+          cell.fill   = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } };
+          cell.font   = { color: { argb: 'FFB91C1C' }, bold: true };
+          cell.border = thinBorder('FF334155'); // dark border for LOP cells
         }
       }
     });
