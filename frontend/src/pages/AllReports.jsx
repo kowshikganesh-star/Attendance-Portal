@@ -338,7 +338,7 @@ const AllReports = () => {
         fgColor: { argb: isWeekend ? 'FF2563EB' : 'FF4F46E5' }, // blue-600 for weekends, indigo-600 otherwise
       };
       cell.alignment  = { horizontal: 'center', vertical: 'middle', wrapText: true };
-      cell.border     = thinBorder('FF334155');
+      cell.border     = thinBorder(isWeekend ? 'FF334155' : 'FFE2E8F0');
     });
     headerRow.getCell(1).font      = { bold: true, color: { argb: 'FFFFFFFF' } };
     headerRow.getCell(2).font      = { bold: true, color: { argb: 'FFFFFFFF' } };
@@ -351,18 +351,18 @@ const AllReports = () => {
     filteredEmployees.forEach((emp, idx) => {
       const cells = dates.map((date, dIdx) => {
         const key = `${emp.id}_${date}`;
-        if (attendanceByKey[key]) return 'p';
+        if (attendanceByKey[key]) return 'P';
 
         const onLeave = lopLeaves.some(
           (leave) => leave.user.id === emp.id && leaveCoversDate(leave, date)
         );
-        if (onLeave) return 'lop';
+        if (onLeave) return 'LOP';
 
         const isToday   = date === todayStr;
         const isWeekend = isWeekendCol[dIdx];
 
         if (isToday || isWeekend) return ''; // pending today, or a non-workday weekend
-        return 'lop'; // past weekday, no clock-in, no leave — absent
+        return 'LOP'; // past weekday, no clock-in, no leave — absent
       });
 
       const row = sheet.addRow([idx + 1, emp.name, ...cells]);
@@ -384,10 +384,10 @@ const AllReports = () => {
         if (isWeekend) {
           cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDCEAFB' } }; // blue-100
           cell.font = { color: { argb: 'FF1D4ED8' }, bold: true }; // blue-700
-        } else if (cell.value === 'p') {
+        } else if (cell.value === 'P') {
           cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD1FAE5' } };
           cell.font = { color: { argb: 'FF047857' }, bold: true };
-        } else if (cell.value === 'lop') {
+        } else if (cell.value === 'LOP') {
           cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } };
           cell.font = { color: { argb: 'FFB91C1C' }, bold: true };
         }
