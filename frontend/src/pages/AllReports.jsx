@@ -391,12 +391,7 @@ const AllReports = () => {
         } else if (cell.value === 'LOP') {
           cell.fill   = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } };
           cell.font   = { color: { argb: 'FFB91C1C' }, bold: true };
-          cell.border = {
-            top:    { style: 'medium', color: { argb: 'FF000000' } },
-            left:   { style: 'medium', color: { argb: 'FF000000' } },
-            bottom: { style: 'medium', color: { argb: 'FF000000' } },
-            right:  { style: 'medium', color: { argb: 'FF000000' } },
-          }; // black, thicker border — visually distinct structure for LOP cells
+          cell.border = thinBorder('FF000000'); // black border, same as P cells
         }
       }
     });
