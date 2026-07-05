@@ -387,11 +387,16 @@ const AllReports = () => {
         } else if (cell.value === 'P') {
           cell.fill   = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD1FAE5' } };
           cell.font   = { color: { argb: 'FF047857' }, bold: true };
-          cell.border = thinBorder('FF334155'); // dark border for P cells
+          cell.border = thinBorder('FF000000'); // black border for P cells
         } else if (cell.value === 'LOP') {
           cell.fill   = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } };
           cell.font   = { color: { argb: 'FFB91C1C' }, bold: true };
-          cell.border = thinBorder('FF334155'); // dark border for LOP cells
+          cell.border = {
+            top:    { style: 'medium', color: { argb: 'FF000000' } },
+            left:   { style: 'medium', color: { argb: 'FF000000' } },
+            bottom: { style: 'medium', color: { argb: 'FF000000' } },
+            right:  { style: 'medium', color: { argb: 'FF000000' } },
+          }; // black, thicker border — visually distinct structure for LOP cells
         }
       }
     });
