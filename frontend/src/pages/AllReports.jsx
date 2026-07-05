@@ -325,14 +325,23 @@ const AllReports = () => {
     headerRow.height = 22;
 
     // Data rows
+    const todayStr = toDateStr(new Date());
+
     filteredEmployees.forEach((emp) => {
-      const cells = dates.map((date) => {
+      const cells = dates.map((date, idx) => {
         const key = `${emp.id}_${date}`;
         if (attendanceByKey[key]) return 'p';
+
         const onLeave = lopLeaves.some(
           (leave) => leave.user.id === emp.id && leaveCoversDate(leave, date)
         );
-        return onLeave ? 'lop' : '';
+        if (onLeave) return 'lop';
+
+        const isToday   = date === todayStr;
+        const isWeekend = isWeekendCol[idx];
+
+        if (isToday || isWeekend) return ''; // pending today, or a non-workday weekend
+        return 'lop'; // past weekday, no clock-in, no leave — absent
       });
 
       const row = sheet.addRow([emp.name, ...cells]);
