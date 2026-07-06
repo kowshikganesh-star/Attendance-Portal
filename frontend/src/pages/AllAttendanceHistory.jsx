@@ -395,7 +395,7 @@ const AllAttendanceHistory = () => {
       titleCell.alignment  = { horizontal: 'center', vertical: 'middle' };
 
       // Header row — each date column shows day number + weekday on two lines
-      const headerRow = sheet.addRow(['#', 'Employee Name', ...dates.map((d) => {
+      const headerRow = sheet.addRow(['#', 'Employee Email', ...dates.map((d) => {
         const dt      = new Date(d + 'T00:00:00');
         const dayNum  = String(dt.getDate()).padStart(2, '0');
         const weekday = dt.toLocaleDateString('en-US', { weekday: 'short' });
@@ -436,7 +436,7 @@ const AllAttendanceHistory = () => {
           return 'LOP'; // past weekday, no clock-in, no leave — absent
         });
 
-        const row = sheet.addRow([idx + 1, emp.name, ...cells]);
+        const row = sheet.addRow([idx + 1, emp.email, ...cells]);
 
         row.getCell(1).font      = { bold: true };
         row.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' };
