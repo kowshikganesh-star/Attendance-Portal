@@ -211,8 +211,10 @@ const AllReports = () => {
 
   // ── CSV Export ────────────────────────────────────────────
   const exportCSV = () => {
-    if (grouped.length === 0) {
-      toast.error('No records to export.');
+    const signedInRows = grouped.filter((g) => g.attendance === 'P');
+
+    if (signedInRows.length === 0) {
+      toast.error('No sign-ins to export.');
       return;
     }
 
@@ -254,16 +256,16 @@ const AllReports = () => {
       'Location',
     ];
 
-    const rows = grouped.map((g) => [
+    const rows = signedInRows.map((g) => [
       fmtDateCSV(g.date),
       esc(g.name),
       esc(g.email),
-      g.attendance || '—',
-      g.attendance === 'P' ? fmtTimeCSV(g.firstClockIn) : '—',
-      g.attendance === 'P' ? (g.lastClockOut ? fmtTimeCSV(g.lastClockOut) : 'Active') : '—',
-      g.attendance === 'P' ? (g.hasActive ? 'Active' : 'Complete') : '—',
-      g.attendance === 'P' ? (fmtDurCSV(g.totalMs) || '—') : '—',
-      g.attendance === 'P' ? esc(g.firstLocation || '—') : '—',
+      g.attendance,
+      fmtTimeCSV(g.firstClockIn),
+      g.lastClockOut ? fmtTimeCSV(g.lastClockOut) : 'Active',
+      g.hasActive ? 'Active' : 'Complete',
+      fmtDurCSV(g.totalMs) || '—',
+      esc(g.firstLocation || '—'),
     ].join(','));
 
     const csv  = [headers.join(','), ...rows].join('\n');
