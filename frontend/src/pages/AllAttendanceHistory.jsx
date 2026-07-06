@@ -1,15 +1,18 @@
 // src/pages/AllAttendanceHistory.jsx
 import { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
+import ExcelJS from 'exceljs';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import toast, { Toaster } from 'react-hot-toast';
 import {
   ShieldCheck, LogOut, ArrowLeft, Calendar,
-  Filter, CheckCircle, AlertCircle, ChevronDown, ChevronUp, Download,
+  Filter, CheckCircle, AlertCircle, ChevronDown, ChevronUp, Download, FileSpreadsheet,
 } from 'lucide-react';
 
 const API = import.meta.env.VITE_API_URL;
+
+const toDateStr = (d) => new Date(d).toLocaleDateString('en-CA');
 
 // ── Group raw records by employee + date ──────────────────
 const groupRecords = (records) => {
@@ -117,6 +120,34 @@ const buildWorkBlocks = (sessions) => {
 
   if (current) blocks.push(current);
   return blocks;
+};
+
+// ── Which calendar dates should we produce columns for? Never future dates ──
+const getDatesToEnumerate = (fetchMonth) => {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const [year, mon] = fetchMonth.split('-').map(Number);
+  const daysInMonth   = new Date(year, mon, 0).getDate();
+  const isFutureMonth = new Date(year, mon - 1, 1) > today;
+  if (isFutureMonth) return [];
+
+  const isCurrentMonth = year === today.getFullYear() && mon === today.getMonth() + 1;
+  const lastDay = isCurrentMonth ? today.getDate() : daysInMonth;
+
+  const dates = [];
+  for (let day = 1; day <= lastDay; day++) {
+    dates.push(`${year}-${String(mon).padStart(2, '0')}-${String(day).padStart(2, '0')}`);
+  }
+  return dates;
+};
+
+// ── Does this leave cover this date? ───────────────────────
+const leaveCoversDate = (leave, dateStr) => {
+  const from = new Date(leave.fromDate); from.setHours(0, 0, 0, 0);
+  const to   = new Date(leave.toDate);   to.setHours(0, 0, 0, 0);
+  const d    = new Date(dateStr + 'T00:00:00');
+  return d >= from && d <= to;
 };
 
 const AllAttendanceHistory = () => {
@@ -293,6 +324,177 @@ const AllAttendanceHistory = () => {
     toast.success('CSV downloaded!');
   };
 
+  // ── Monthly Summary Export (styled .xlsx: employee rows × day columns) ──
+  // Does its own dedicated fetch for the target month's attendance + approved
+  // LOP/HD_LOP leaves, independent of whatever filter mode is currently active.
+  const exportMonthlySummaryXLSX = async () => {
+    const targetMonth = filterType === 'month'
+      ? month
+      : (startDate ? startDate.slice(0, 7) : month);
+
+    try {
+      const params = { month: targetMonth };
+      if (selectedUser) params.userId = selectedUser;
+
+      const leaveParams = { status: 'APPROVED' };
+      if (selectedUser) leaveParams.userId = selectedUser;
+
+      const [attendanceRes, lopRes, hdLopRes] = await Promise.all([
+        axios.get(`${API}/attendance/history/all`, { params }),
+        axios.get(`${API}/leaves`, { params: { ...leaveParams, type: 'LOP' } }),
+        axios.get(`${API}/leaves`, { params: { ...leaveParams, type: 'HD_LOP' } }),
+      ]);
+
+      const monthRecords   = attendanceRes.data.records;
+      const monthEmployees = attendanceRes.data.employees;
+      const lopLeaves       = [...lopRes.data.leaves, ...hdLopRes.data.leaves];
+
+      const attendanceByKey = {};
+      monthRecords.forEach((record) => {
+        const date = toDateStr(record.clockIn);
+        attendanceByKey[`${record.userId}_${date}`] = true;
+      });
+
+      const dates = getDatesToEnumerate(targetMonth);
+      if (dates.length === 0) {
+        toast.error('No days to export for this month.');
+        return;
+      }
+
+      const filteredEmployees = selectedUser
+        ? monthEmployees.filter((e) => e.id === parseInt(selectedUser))
+        : monthEmployees;
+
+      const isWeekendCol = dates.map((d) => {
+        const day = new Date(d + 'T00:00:00').getDay(); // 0 = Sun, 6 = Sat
+        return day === 0 || day === 6;
+      });
+
+      const totalCols  = 2 + dates.length;
+      const monthTitle = new Date(targetMonth + '-01').toLocaleDateString('en-US', {
+        month: 'long', year: 'numeric',
+      });
+
+      const workbook = new ExcelJS.Workbook();
+      const sheet     = workbook.addWorksheet('Monthly Summary');
+
+      const thinBorder = (color) => ({
+        top:    { style: 'thin', color: { argb: color } },
+        left:   { style: 'thin', color: { argb: color } },
+        bottom: { style: 'thin', color: { argb: color } },
+        right:  { style: 'thin', color: { argb: color } },
+      });
+
+      // Title row
+      const titleRow = sheet.addRow([`Attendance Summary — ${monthTitle}`]);
+      sheet.mergeCells(titleRow.number, 1, titleRow.number, totalCols);
+      titleRow.height = 26;
+      const titleCell = titleRow.getCell(1);
+      titleCell.font      = { bold: true, size: 13, color: { argb: 'FFFFFFFF' } };
+      titleCell.fill       = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF312E81' } }; // indigo-900
+      titleCell.alignment  = { horizontal: 'center', vertical: 'middle' };
+
+      // Header row — each date column shows day number + weekday on two lines
+      const headerRow = sheet.addRow(['#', 'Employee Name', ...dates.map((d) => {
+        const dt      = new Date(d + 'T00:00:00');
+        const dayNum  = String(dt.getDate()).padStart(2, '0');
+        const weekday = dt.toLocaleDateString('en-US', { weekday: 'short' });
+        return `${dayNum}\n${weekday}`;
+      })]);
+      headerRow.eachCell((cell, colNumber) => {
+        const isWeekend = colNumber > 2 && isWeekendCol[colNumber - 3];
+        cell.font      = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
+        cell.fill       = {
+          type: 'pattern', pattern: 'solid',
+          fgColor: { argb: isWeekend ? 'FF2563EB' : 'FF4F46E5' }, // blue-600 for weekends, indigo-600 otherwise
+        };
+        cell.alignment  = { horizontal: 'center', vertical: 'middle', wrapText: true };
+        cell.border     = thinBorder(isWeekend ? 'FF334155' : 'FFE2E8F0');
+      });
+      headerRow.getCell(1).font      = { bold: true, color: { argb: 'FFFFFFFF' } };
+      headerRow.getCell(2).font      = { bold: true, color: { argb: 'FFFFFFFF' } };
+      headerRow.getCell(2).alignment = { horizontal: 'left', vertical: 'middle' };
+      headerRow.height = 30;
+
+      // Data rows
+      const todayStr = toDateStr(new Date());
+
+      filteredEmployees.forEach((emp, idx) => {
+        const cells = dates.map((date, dIdx) => {
+          const key = `${emp.id}_${date}`;
+          if (attendanceByKey[key]) return 'P';
+
+          const onLeave = lopLeaves.some(
+            (leave) => leave.user.id === emp.id && leaveCoversDate(leave, date)
+          );
+          if (onLeave) return 'LOP';
+
+          const isToday   = date === todayStr;
+          const isWeekend = isWeekendCol[dIdx];
+
+          if (isToday || isWeekend) return ''; // pending today, or a non-workday weekend
+          return 'LOP'; // past weekday, no clock-in, no leave — absent
+        });
+
+        const row = sheet.addRow([idx + 1, emp.name, ...cells]);
+
+        row.getCell(1).font      = { bold: true };
+        row.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' };
+        row.getCell(1).border    = thinBorder('FFE2E8F0');
+
+        row.getCell(2).font      = { bold: true };
+        row.getCell(2).alignment = { horizontal: 'left', vertical: 'middle' };
+        row.getCell(2).border    = thinBorder('FFE2E8F0');
+
+        for (let i = 3; i <= cells.length + 2; i++) {
+          const cell      = row.getCell(i);
+          const isWeekend = isWeekendCol[i - 3];
+          cell.alignment  = { horizontal: 'center', vertical: 'middle' };
+          cell.border     = thinBorder('FFE2E8F0');
+
+          if (isWeekend) {
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDCEAFB' } }; // blue-100
+            cell.font = { color: { argb: 'FF1D4ED8' }, bold: true }; // blue-700
+          } else if (cell.value === 'P') {
+            cell.fill   = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD1FAE5' } };
+            cell.font   = { color: { argb: 'FF047857' }, bold: true };
+            cell.border = thinBorder('FF000000'); // black border for P cells
+          } else if (cell.value === 'LOP') {
+            cell.fill   = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } };
+            cell.font   = { color: { argb: 'FFB91C1C' }, bold: true };
+            cell.border = thinBorder('FF000000'); // black border, same as P cells
+          }
+        }
+      });
+
+      // Column widths
+      sheet.getColumn(1).width = 6;
+      sheet.getColumn(2).width = 26;
+      for (let i = 3; i <= dates.length + 2; i++) {
+        sheet.getColumn(i).width = 6;
+      }
+
+      // Freeze title row + header row + first two columns (serial number + employee name)
+      sheet.views = [{ state: 'frozen', xSplit: 2, ySplit: 2 }];
+
+      const buffer = await workbook.xlsx.writeBuffer();
+      const blob   = new Blob([buffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const url  = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href  = url;
+      link.setAttribute('download', `monthly_summary_${targetMonth}${selectedUser ? `_emp${selectedUser}` : ''}.xlsx`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      toast.success('Monthly summary Excel downloaded!');
+    } catch {
+      toast.error('Failed to generate monthly summary.');
+    }
+  };
+
   const grouped = groupRecords(records);
 
   return (
@@ -335,14 +537,23 @@ const AllAttendanceHistory = () => {
               </p>
             </div>
           </div>
-          <button onClick={exportCSV} disabled={records.length === 0}
-            className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500
-                       disabled:opacity-50 disabled:cursor-not-allowed
-                       text-white px-4 py-2.5 rounded-xl text-sm font-semibold
-                       transition-all shadow-lg shadow-indigo-600/20">
-            <Download className="w-4 h-4" />
-            Export CSV
-          </button>
+          <div className="flex items-center gap-3">
+            <button onClick={exportMonthlySummaryXLSX}
+              className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700
+                         text-white px-4 py-2.5 rounded-xl text-sm font-semibold
+                         transition-all border border-slate-700">
+              <FileSpreadsheet className="w-4 h-4" />
+              Monthly Summary
+            </button>
+            <button onClick={exportCSV} disabled={records.length === 0}
+              className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500
+                         disabled:opacity-50 disabled:cursor-not-allowed
+                         text-white px-4 py-2.5 rounded-xl text-sm font-semibold
+                         transition-all shadow-lg shadow-indigo-600/20">
+              <Download className="w-4 h-4" />
+              Export CSV
+            </button>
+          </div>
         </div>
 
         {/* Filters */}
