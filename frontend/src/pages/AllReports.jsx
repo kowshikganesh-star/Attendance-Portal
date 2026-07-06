@@ -246,9 +246,9 @@ const AllReports = () => {
       'Date',
       'Employee Name',
       'Email',
+      'Attendance',
       'First Clock In',
       'Last Clock Out',
-      'Attendance',
       'Status',
       'Total Duration',
       'Location',
@@ -258,12 +258,12 @@ const AllReports = () => {
       fmtDateCSV(g.date),
       esc(g.name),
       esc(g.email),
-      g.attendance === 'P' ? fmtTimeCSV(g.firstClockIn) : '',
-      g.attendance === 'P' ? (g.lastClockOut ? fmtTimeCSV(g.lastClockOut) : 'Active') : '',
-      g.attendance, // 'P', 'LOP', or blank
-      g.attendance === 'P' ? (g.hasActive ? 'Active' : 'Complete') : '',
-      g.attendance === 'P' ? fmtDurCSV(g.totalMs) : '',
-      g.attendance === 'P' ? esc(g.firstLocation || '—') : '',
+      g.attendance || '—',
+      g.attendance === 'P' ? fmtTimeCSV(g.firstClockIn) : '—',
+      g.attendance === 'P' ? (g.lastClockOut ? fmtTimeCSV(g.lastClockOut) : 'Active') : '—',
+      g.attendance === 'P' ? (g.hasActive ? 'Active' : 'Complete') : '—',
+      g.attendance === 'P' ? (fmtDurCSV(g.totalMs) || '—') : '—',
+      g.attendance === 'P' ? esc(g.firstLocation || '—') : '—',
     ].join(','));
 
     const csv  = [headers.join(','), ...rows].join('\n');
