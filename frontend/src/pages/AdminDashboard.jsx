@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
-import { ShieldCheck, LogOut, Users, Clock, History, FileText, BarChart2 } from 'lucide-react';
+import { ShieldCheck, LogOut, Users, Clock, History, FileText, BarChart2, MapPin, ExternalLink } from 'lucide-react';
 import LocationMap from '../components/LocationMap';
 
 const API = import.meta.env.VITE_API_URL;
@@ -12,9 +12,10 @@ const AdminDashboard = () => {
   const { user, logout } = useAuth();
   const navigate         = useNavigate();
 
-  const [active,  setActive]  = useState([]);
-  const [stats,   setStats]   = useState({ totalEmployees: 0, onLeave: 0 });
-  const [loading, setLoading] = useState(true);
+  const [active,     setActive]     = useState([]);
+  const [stats,      setStats]      = useState({ totalEmployees: 0, onLeave: 0 });
+  const [loading,    setLoading]    = useState(true);
+  const [expandedId, setExpandedId] = useState(null);
 
   const fetchActive = async () => {
     try {
@@ -48,6 +49,9 @@ const AdminDashboard = () => {
     new Date(date).toLocaleTimeString('en-US', {
       hour: '2-digit', minute: '2-digit', hour12: true,
     });
+
+  const toggleExpand = (id) =>
+    setExpandedId((prev) => (prev === id ? null : id));
 
   return (
     <div className="min-h-screen bg-slate-950 text-white">
@@ -120,6 +124,9 @@ const AdminDashboard = () => {
             <span className="text-xs bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-full">
               {active.length} active
             </span>
+            <span className="text-xs text-slate-500 ml-2">
+              👆 Click a row to see their location
+            </span>
           </div>
 
           {loading ? (
@@ -133,27 +140,72 @@ const AdminDashboard = () => {
             </div>
           ) : (
             <div className="space-y-3">
-              {active.map((record) => (
-                <div key={record.id}
-                  className="flex items-center justify-between p-4 bg-slate-800 rounded-xl">
-                  <div className="flex items-center gap-3">
-                    <div className="w-9 h-9 bg-indigo-600 rounded-full flex items-center justify-center font-bold text-sm">
-                      {record.user.name.charAt(0)}
+              {active.map((record) => {
+                const isExpanded  = expandedId === record.id;
+                const hasLocation = record.latitude && record.longitude;
+
+                return (
+                  <div key={record.id}
+                    className="bg-slate-800 rounded-xl overflow-hidden">
+
+                    {/* Row — clickable */}
+                    <div
+                      onClick={() => toggleExpand(record.id)}
+                      className="flex items-center justify-between p-4 cursor-pointer hover:bg-slate-700/50 transition-colors"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-9 h-9 bg-indigo-600 rounded-full flex items-center justify-center font-bold text-sm">
+                          {record.user.name.charAt(0)}
+                        </div>
+                        <div>
+                          <p className="font-medium text-white">{record.user.name}</p>
+                          <p className="text-xs text-slate-400">{record.user.email}</p>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className="flex items-center gap-1 text-emerald-400 text-sm">
+                          <Clock className="w-4 h-4" />
+                          <span>{formatTime(record.clockIn)}</span>
+                        </div>
+                        <span className="text-xs text-slate-500">Clocked in</span>
+                      </div>
                     </div>
-                    <div>
-                      <p className="font-medium text-white">{record.user.name}</p>
-                      <p className="text-xs text-slate-400">{record.user.email}</p>
-                    </div>
+
+                    {/* Expanded — this employee's location ✅ */}
+                    {isExpanded && (
+                      <div className="px-4 pb-4 pt-1 border-t border-slate-700/50">
+                        {hasLocation ? (
+                          <div className="flex items-center justify-between bg-slate-900 rounded-lg px-4 py-3 mt-2">
+                            <div className="flex items-start gap-2">
+                              <MapPin className="w-4 h-4 text-emerald-400 mt-0.5 flex-shrink-0" />
+                              <div>
+                                <p className="text-sm text-slate-200">
+                                  {record.location || 'Location captured'}
+                                </p>
+                                <p className="text-xs text-slate-500 mt-0.5">
+                                  {record.latitude.toFixed(5)}, {record.longitude.toFixed(5)}
+                                </p>
+                              </div>
+                            </div>
+                            <a
+                              href={`https://www.google.com/maps?q=${record.latitude},${record.longitude}`}
+                              target="_blank" rel="noopener noreferrer"
+                              onClick={(e) => e.stopPropagation()}
+                              className="flex items-center gap-1 text-xs text-indigo-400 hover:text-indigo-300 flex-shrink-0 ml-3"
+                            >
+                              Open in Maps <ExternalLink className="w-3 h-3" />
+                            </a>
+                          </div>
+                        ) : (
+                          <p className="text-sm text-slate-500 mt-2 px-1">
+                            No location captured for this clock-in.
+                          </p>
+                        )}
+                      </div>
+                    )}
                   </div>
-                  <div className="text-right">
-                    <div className="flex items-center gap-1 text-emerald-400 text-sm">
-                      <Clock className="w-4 h-4" />
-                      <span>{formatTime(record.clockIn)}</span>
-                    </div>
-                    <span className="text-xs text-slate-500">Clocked in</span>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
