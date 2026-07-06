@@ -1,5 +1,5 @@
 // src/pages/AdminDashboard.jsx
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
@@ -16,6 +16,7 @@ const AdminDashboard = () => {
   const [stats,      setStats]      = useState({ totalEmployees: 0, onLeave: 0 });
   const [loading,    setLoading]    = useState(true);
   const [expandedId, setExpandedId] = useState(null);
+  const mapSectionRef = useRef(null);
 
   const fetchActive = async () => {
     try {
@@ -50,8 +51,13 @@ const AdminDashboard = () => {
       hour: '2-digit', minute: '2-digit', hour12: true,
     });
 
-  const toggleExpand = (id) =>
+  const toggleExpand = (id) => {
     setExpandedId((prev) => (prev === id ? null : id));
+    // Only scroll/focus the map when opening (not when collapsing)
+    if (expandedId !== id) {
+      mapSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  };
 
   return (
     <div className="min-h-screen bg-slate-950 text-white">
@@ -212,7 +218,7 @@ const AdminDashboard = () => {
 
         {/* Live Location Map */}
         {active.length > 0 && (
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+          <div ref={mapSectionRef} className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
             <div className="flex items-center gap-2 mb-4">
               <span className="text-lg">📍</span>
               <h2 className="font-semibold text-white">Live Employee Locations</h2>
@@ -222,7 +228,9 @@ const AdminDashboard = () => {
             </div>
             <LocationMap
               height="400px"
+              focusKey={expandedId}
               markers={active.map((r) => ({
+                id:        r.id,
                 name:      r.user.name,
                 email:     r.user.email,
                 latitude:  r.latitude,
