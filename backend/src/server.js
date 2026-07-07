@@ -18,6 +18,7 @@ app.use(cors({
   origin: function(origin, callback) {
     if (!origin || 
         origin.endsWith('.vercel.app') || 
+        origin.endsWith('.app.github.dev') ||  
         origin === 'http://localhost:5173') {
       callback(null, true);
     } else {
