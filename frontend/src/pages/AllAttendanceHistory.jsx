@@ -327,6 +327,13 @@ const AllAttendanceHistory = () => {
   // ── Monthly Summary Export (styled .xlsx: employee rows × day columns) ──
   // Does its own dedicated fetch for the target month's attendance + approved
   // LOP/HD_LOP leaves, independent of whatever filter mode is currently active.
+  //
+  // Marker priority on a WEEKDAY: approved leave → hours worked → absent.
+  //   Weekend (Sat/Sun): worked → P (any hours), otherwise H (holiday)
+  //   HD_LOP leave → HD-LOP  |  LOP leave → LOP   (leave always wins)
+  //   No leave, finished weekday:  <4h → LOP,  4h–5h → HD-LOP,  5h+ → P
+  //   No leave, no clock-in, past weekday → LOP (absent)
+  //   Today / still-active session → P (not judged) ;  today, no clock-in → blank
   const exportMonthlySummaryXLSX = async () => {
     const targetMonth = filterType === 'month'
       ? month
@@ -349,10 +356,21 @@ const AllAttendanceHistory = () => {
       const monthEmployees = attendanceRes.data.employees;
       const lopLeaves       = [...lopRes.data.leaves, ...hdLopRes.data.leaves];
 
+      // Per employee-day: total worked ms + whether a session is still open.
+      // Needed so the summary can judge short days (<4h / 4–5h) by hours worked.
       const attendanceByKey = {};
       monthRecords.forEach((record) => {
         const date = toDateStr(record.clockIn);
-        attendanceByKey[`${record.userId}_${date}`] = true;
+        const key  = `${record.userId}_${date}`;
+        if (!attendanceByKey[key]) {
+          attendanceByKey[key] = { totalMs: 0, hasActive: false };
+        }
+        const g = attendanceByKey[key];
+        if (record.clockOut) {
+          g.totalMs += new Date(record.clockOut) - new Date(record.clockIn);
+        } else {
+          g.hasActive = true;
+        }
       });
 
       const dates = getDatesToEnumerate(targetMonth);
@@ -385,7 +403,20 @@ const AllAttendanceHistory = () => {
         right:  { style: 'thin', color: { argb: color } },
       });
 
-      // Title row
+      // Cell color map — bright base, black-bordered markers.
+      // Red severity ramps: approved leave (palest) → short hours → absent (strongest).
+      // "label" is the professional name used in the legend table.
+      const KIND_STYLE = {
+        P:          { bg: 'FFD1FAE5', fg: 'FF047857', label: 'Present',                hardBorder: true  }, // green
+        HD_LEAVE:   { bg: 'FFFFF3C4', fg: 'FF92700A', label: 'Half Day (Approved)',    hardBorder: true  }, // pale amber
+        HD_WORK:    { bg: 'FFF6A609', fg: 'FF5A3D00', label: 'Half Day (Short Hours)', hardBorder: true  }, // deep amber/orange
+        LOP_LEAVE:  { bg: 'FFFDECEA', fg: 'FFB4413A', label: 'LOP (Approved Leave)',   hardBorder: true  }, // pale red
+        LOP_SHORT:  { bg: 'FFF2B8B2', fg: 'FF7A2820', label: 'LOP (Short Hours)',      hardBorder: true  }, // medium red
+        LOP_ABSENT: { bg: 'FFEF9A93', fg: 'FF7A1C14', label: 'LOP (Absent)',           hardBorder: true  }, // strong red — no-show stands out
+        H:          { bg: 'FFDCEAFB', fg: 'FF1D4ED8', label: 'Holiday / Weekend',      hardBorder: false }, // blue (soft border)
+      };
+
+      // Title row — indigo
       const titleRow = sheet.addRow([`Attendance Summary — ${monthTitle}`]);
       sheet.mergeCells(titleRow.number, 1, titleRow.number, totalCols);
       titleRow.height = 26;
@@ -394,7 +425,7 @@ const AllAttendanceHistory = () => {
       titleCell.fill       = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF312E81' } }; // indigo-900
       titleCell.alignment  = { horizontal: 'center', vertical: 'middle' };
 
-      // Header row — each date column shows day number + weekday on two lines
+      // Header row — indigo, weekends in blue; day number + weekday on two lines
       const headerRow = sheet.addRow(['#', 'Employee Email', ...dates.map((d) => {
         const dt      = new Date(d + 'T00:00:00');
         const dayNum  = String(dt.getDate()).padStart(2, '0');
@@ -417,26 +448,53 @@ const AllAttendanceHistory = () => {
       headerRow.height = 30;
 
       // Data rows
-      const todayStr = toDateStr(new Date());
+      const todayStr    = toDateStr(new Date());
+      const FOUR_HOURS  = 4 * 60 * 60 * 1000; // 14,400,000 ms
+      const FIVE_HOURS  = 5 * 60 * 60 * 1000; // 18,000,000 ms
 
       filteredEmployees.forEach((emp, idx) => {
-        const cells = dates.map((date, dIdx) => {
-          const key = `${emp.id}_${date}`;
-          if (attendanceByKey[key]) return 'P';
+        // Each entry: { v: display text, kind: style key }
+        const cellObjs = dates.map((date, dIdx) => {
+          const key           = `${emp.id}_${date}`;
+          const attendanceRow = attendanceByKey[key];
+          const isWeekend     = isWeekendCol[dIdx];
+          const isToday       = date === todayStr;
 
-          const onLeave = lopLeaves.some(
-            (leave) => leave.user.id === emp.id && leaveCoversDate(leave, date)
+          // ── Weekend: worked → P (any hours), otherwise Holiday ──
+          if (isWeekend) {
+            return attendanceRow ? { v: 'P', kind: 'P' } : { v: 'H', kind: 'H' };
+          }
+
+          // ── Weekday: approved leave ALWAYS wins (even if they logged in) ──
+          const hdLopLeave = lopLeaves.some(
+            (leave) => leave.user.id === emp.id
+              && leave.type === 'HD_LOP'
+              && leaveCoversDate(leave, date)
           );
-          if (onLeave) return 'LOP';
+          if (hdLopLeave) return { v: 'HD-LOP', kind: 'HD_LEAVE' }; // approved half-day leave
 
-          const isToday   = date === todayStr;
-          const isWeekend = isWeekendCol[dIdx];
+          const lopLeave = lopLeaves.some(
+            (leave) => leave.user.id === emp.id
+              && leave.type === 'LOP'
+              && leaveCoversDate(leave, date)
+          );
+          if (lopLeave) return { v: 'LOP', kind: 'LOP_LEAVE' };
 
-          if (isToday || isWeekend) return ''; // pending today, or a non-workday weekend
-          return 'LOP'; // past weekday, no clock-in, no leave — absent
+          // ── No leave → judge by clock-in / hours worked ──
+          if (attendanceRow) {
+            if (isToday || attendanceRow.hasActive) return { v: 'P', kind: 'P' }; // not finished → don't judge yet
+            const dur = attendanceRow.totalMs;
+            if (dur < FOUR_HOURS) return { v: 'LOP', kind: 'LOP_SHORT' };    // under 4h → short-day LOP
+            if (dur < FIVE_HOURS) return { v: 'HD-LOP', kind: 'HD_WORK' };   // 4h–5h   → worked half-day
+            return { v: 'P', kind: 'P' };                                    // 5h+     → present
+          }
+
+          // ── No leave, no clock-in ──
+          if (isToday) return { v: '', kind: '' };          // today, not clocked in yet → pending
+          return { v: 'LOP', kind: 'LOP_ABSENT' };          // past weekday, absent → strong red
         });
 
-        const row = sheet.addRow([idx + 1, emp.email, ...cells]);
+        const row = sheet.addRow([idx + 1, emp.email, ...cellObjs.map((c) => c.v)]);
 
         row.getCell(1).font      = { bold: true };
         row.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' };
@@ -446,35 +504,81 @@ const AllAttendanceHistory = () => {
         row.getCell(2).alignment = { horizontal: 'left', vertical: 'middle' };
         row.getCell(2).border    = thinBorder('FFE2E8F0');
 
-        for (let i = 3; i <= cells.length + 2; i++) {
+        for (let i = 3; i <= cellObjs.length + 2; i++) {
           const cell      = row.getCell(i);
+          const kind      = cellObjs[i - 3].kind;
           const isWeekend = isWeekendCol[i - 3];
-          cell.alignment  = { horizontal: 'center', vertical: 'middle' };
-          cell.border     = thinBorder('FFE2E8F0');
+          const style     = KIND_STYLE[kind];
 
-          if (isWeekend) {
-            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDCEAFB' } }; // blue-100
-            cell.font = { color: { argb: 'FF1D4ED8' }, bold: true }; // blue-700
-          } else if (cell.value === 'P') {
-            cell.fill   = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD1FAE5' } };
-            cell.font   = { color: { argb: 'FF047857' }, bold: true };
-            cell.border = thinBorder('FF000000'); // black border for P cells
-          } else if (cell.value === 'LOP') {
-            cell.fill   = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } };
-            cell.font   = { color: { argb: 'FFB91C1C' }, bold: true };
-            cell.border = thinBorder('FF000000'); // black border, same as P cells
+          cell.alignment = { horizontal: 'center', vertical: 'middle' };
+          cell.border    = thinBorder('FFE2E8F0');
+
+          if (style) {
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: style.bg } };
+            cell.font = { color: { argb: style.fg }, bold: true };
+            if (style.hardBorder) cell.border = thinBorder('FF000000'); // black outline like the grid
+          } else if (isWeekend) {
+            // Blank weekend cell (rare) — keep the light blue wash for consistency
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDCEAFB' } };
+            cell.font = { color: { argb: 'FF1D4ED8' }, bold: true };
           }
+          // kind '' on a weekday (pending today) → no fill, plain cell
         }
       });
 
+      // ── Legend (styled as a bordered table, matching the grid above) ──
+      sheet.addRow([]); // spacer
+
+      // Legend header row (indigo, like the main header)
+      const legHeader = sheet.addRow(['Marker', 'Meaning']);
+      [1, 2].forEach((c) => {
+        const cell = legHeader.getCell(c);
+        cell.font      = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+        cell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4F46E5' } }; // indigo-600
+        cell.alignment = { horizontal: c === 1 ? 'center' : 'left', vertical: 'middle' };
+        cell.border    = thinBorder('FF000000');
+      });
+      sheet.mergeCells(legHeader.number, 2, legHeader.number, Math.min(8, totalCols));
+      legHeader.height = 22;
+
+      const legendItems = [
+        { mark: 'P',      kind: 'P'          },
+        { mark: 'HD-LOP', kind: 'HD_LEAVE'   },
+        { mark: 'HD-LOP', kind: 'HD_WORK'    },
+        { mark: 'LOP',    kind: 'LOP_LEAVE'  },
+        { mark: 'LOP',    kind: 'LOP_SHORT'  },
+        { mark: 'LOP',    kind: 'LOP_ABSENT' },
+        { mark: 'H',      kind: 'H'          },
+      ];
+
+      legendItems.forEach((item) => {
+        const style = KIND_STYLE[item.kind];
+        if (!style) return; // safety: skip any kind missing from KIND_STYLE
+
+        const lr = sheet.addRow([item.mark, style.label]);
+        lr.height = 20;
+
+        const markCell = lr.getCell(1);
+        markCell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: style.bg } };
+        markCell.font      = { color: { argb: style.fg }, bold: true };
+        markCell.alignment = { horizontal: 'center', vertical: 'middle' };
+        markCell.border    = thinBorder('FF000000');
+
+        const descCell = lr.getCell(2);
+        descCell.alignment = { horizontal: 'left', vertical: 'middle' };
+        descCell.font      = { size: 11, color: { argb: 'FF334155' } };
+        descCell.border    = thinBorder('FF000000');
+        sheet.mergeCells(lr.number, 2, lr.number, Math.min(8, totalCols));
+      });
+
       // Column widths
-      sheet.getColumn(1).width = 6;
+      sheet.getColumn(1).width = 8;
       sheet.getColumn(2).width = 26;
       for (let i = 3; i <= dates.length + 2; i++) {
-        sheet.getColumn(i).width = 6;
+        sheet.getColumn(i).width = 8; // HD-LOP needs the extra room
       }
 
-      // Freeze title row + header row + first two columns (serial number + employee name)
+      // Freeze title row + header row + first two columns (serial number + employee email)
       sheet.views = [{ state: 'frozen', xSplit: 2, ySplit: 2 }];
 
       const buffer = await workbook.xlsx.writeBuffer();
