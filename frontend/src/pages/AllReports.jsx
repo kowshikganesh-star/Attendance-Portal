@@ -327,16 +327,15 @@ const AllReports = () => {
       right:  { style: 'thin', color: { argb: color } },
     });
 
-    // Color map — one place to tweak all cell styling, keyed by "kind"
-    const KIND_STYLE = {
-      P:          { bg: 'FFD1FAE5', fg: 'FF047857', hardBorder: true  }, // green
-      HD_LEAVE:   { bg: 'FFFEF3C7', fg: 'FFB45309', hardBorder: true  }, // light amber
-      HD_WORK:    { bg: 'FFFDE68A', fg: 'FF92400E', hardBorder: true  }, // deep amber
-      LOP_LEAVE:  { bg: 'FFFEE2E2', fg: 'FFB91C1C', hardBorder: true  }, // light red
-      LOP_SHORT:  { bg: 'FFFCA5A5', fg: 'FF7F1D1D', hardBorder: true  }, // medium red
-      LOP_ABSENT: { bg: 'FF7F1D1D', fg: 'FFFFFFFF', hardBorder: true  }, // dark red
-      H:          { bg: 'FFDCEAFB', fg: 'FF1D4ED8', hardBorder: false }, // blue
-    };
+   // Color map — muted, professional palette. Text stays dark for readability.
+const KIND_STYLE = {
+  P:          { bg: 'FFE8F5E9', fg: 'FF2E7D32', hardBorder: false }, // soft green
+  HD:         { bg: 'FFFFF8E1', fg: 'FF8D6E00', hardBorder: false }, // soft amber
+  LOP_LEAVE:  { bg: 'FFFDECEA', fg: 'FFB4413A', hardBorder: false }, // pale red — planned leave
+  LOP_SHORT:  { bg: 'FFF9D9D6', fg: 'FF9E362F', hardBorder: false }, // light red — short day
+  LOP_ABSENT: { bg: 'FFF2B8B2', fg: 'FF7A2820', hardBorder: false }, // deeper red — absent
+  H:          { bg: 'FFEEF2F7', fg: 'FF5A6B82', hardBorder: false }, // soft slate — holiday
+};
 
     // Title row
     const titleRow = sheet.addRow([`Attendance Summary — ${monthTitle}`]);
