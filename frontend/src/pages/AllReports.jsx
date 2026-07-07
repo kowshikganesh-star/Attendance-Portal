@@ -283,16 +283,16 @@ const AllReports = () => {
   };
 
   // ── Monthly Summary Export (styled .xlsx: employee rows × day columns) ──
-  // Each cell carries a display value (v) AND a kind, so three different LOP
-  // situations can all show "LOP" text but get their own color.
+  // Each cell carries a display value (v) AND a kind, so the different LOP /
+  // half-day situations can share text but get their own (muted) color.
   //
-  //   P          green       → present (weekday 5h+, or any weekend sign-in)
-  //   HD-LOP(leave) light amber → approved half-day (HD_LOP) leave  (leave always wins)
-  //   HD-LOP(work)  deep amber  → worked 4–5h on a weekday (short day)
-  //   LOP(leave) light red   → approved loss-of-pay leave  (leave always wins)
-  //   LOP(short) medium red → worked under 4h on a weekday (short day)
-  //   LOP(absent)dark red   → past weekday, no leave, no sign-in
-  //   H          blue       → weekend, no work (holiday)
+  //   P          soft green   → present (weekday 5h+, or any weekend sign-in)
+  //   HD-LOP(leave) light amber → approved half-day (HD_LOP) leave  (leave wins)
+  //   HD-LOP(work)  deep amber  → worked 4–5h on a weekday
+  //   LOP(leave) pale red   → approved loss-of-pay leave  (leave wins)
+  //   LOP(short) light red  → worked under 4h on a weekday (short day)
+  //   LOP(absent)deeper red → past weekday, no leave, no sign-in
+  //   H          soft slate → weekend, no work (holiday)
   //   ''         blank      → today, not clocked in yet (pending)
   const exportMonthlySummaryXLSX = async () => {
     const dates = getDatesToEnumerate(fetchMonth, ''); // full month, ignoring the date filter
@@ -327,15 +327,19 @@ const AllReports = () => {
       right:  { style: 'thin', color: { argb: color } },
     });
 
-   // Color map — muted, professional palette. Text stays dark for readability.
-const KIND_STYLE = {
-  P:          { bg: 'FFE8F5E9', fg: 'FF2E7D32', hardBorder: false }, // soft green
-  HD:         { bg: 'FFFFF8E1', fg: 'FF8D6E00', hardBorder: false }, // soft amber
-  LOP_LEAVE:  { bg: 'FFFDECEA', fg: 'FFB4413A', hardBorder: false }, // pale red — planned leave
-  LOP_SHORT:  { bg: 'FFF9D9D6', fg: 'FF9E362F', hardBorder: false }, // light red — short day
-  LOP_ABSENT: { bg: 'FFF2B8B2', fg: 'FF7A2820', hardBorder: false }, // deeper red — absent
-  H:          { bg: 'FFEEF2F7', fg: 'FF5A6B82', hardBorder: false }, // soft slate — holiday
-};
+    // Color map — muted, professional palette; dark text on soft fills, thin gray grid.
+    // One place to tweak all cell styling, keyed by "kind".
+    const KIND_STYLE = {
+      P:          { bg: 'FFE8F5E9', fg: 'FF2E7D32', hardBorder: false }, // soft green
+      HD_LEAVE:   { bg: 'FFFFF8E1', fg: 'FF8D6E00', hardBorder: false }, // light amber — approved half-day leave
+      HD_WORK:    { bg: 'FFFCE7B3', fg: 'FF6B5200', hardBorder: false }, // deeper amber — worked 4–5h
+      LOP_LEAVE:  { bg: 'FFFDECEA', fg: 'FFB4413A', hardBorder: false }, // pale red — planned leave
+      LOP_SHORT:  { bg: 'FFF9D9D6', fg: 'FF9E362F', hardBorder: false }, // light red — short day
+      LOP_ABSENT: { bg: 'FFF2B8B2', fg: 'FF7A2820', hardBorder: false }, // deeper red — absent
+      H:          { bg: 'FFEEF2F7', fg: 'FF5A6B82', hardBorder: false }, // soft slate — holiday
+    };
+
+    const GRID = 'FFD9DEE6'; // subtle gray grid line for all cells
 
     // Title row
     const titleRow = sheet.addRow([`Attendance Summary — ${monthTitle}`]);
@@ -343,7 +347,7 @@ const KIND_STYLE = {
     titleRow.height = 26;
     const titleCell = titleRow.getCell(1);
     titleCell.font      = { bold: true, size: 13, color: { argb: 'FFFFFFFF' } };
-    titleCell.fill       = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF312E81' } }; // indigo-900
+    titleCell.fill       = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF334155' } }; // slate-700
     titleCell.alignment  = { horizontal: 'center', vertical: 'middle' };
 
     // Header row — each date column shows day number + weekday on two lines
@@ -358,10 +362,10 @@ const KIND_STYLE = {
       cell.font      = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
       cell.fill       = {
         type: 'pattern', pattern: 'solid',
-        fgColor: { argb: isWeekend ? 'FF2563EB' : 'FF4F46E5' }, // blue-600 for weekends, indigo-600 otherwise
+        fgColor: { argb: isWeekend ? 'FF64748B' : 'FF475569' }, // slate-500 for weekends, slate-600 otherwise
       };
       cell.alignment  = { horizontal: 'center', vertical: 'middle', wrapText: true };
-      cell.border     = thinBorder(isWeekend ? 'FF334155' : 'FFE2E8F0');
+      cell.border     = thinBorder(GRID);
     });
     headerRow.getCell(1).font      = { bold: true, color: { argb: 'FFFFFFFF' } };
     headerRow.getCell(2).font      = { bold: true, color: { argb: 'FFFFFFFF' } };
@@ -412,18 +416,18 @@ const KIND_STYLE = {
 
         // ── No leave, no clock-in ──
         if (isToday) return { v: '', kind: '' };          // today, not clocked in yet → pending
-        return { v: 'LOP', kind: 'LOP_ABSENT' };          // past weekday, absent → dark red
+        return { v: 'LOP', kind: 'LOP_ABSENT' };          // past weekday, absent → deeper red
       });
 
       const row = sheet.addRow([idx + 1, emp.email, ...cellObjs.map((c) => c.v)]);
 
       row.getCell(1).font      = { bold: true };
       row.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' };
-      row.getCell(1).border    = thinBorder('FFE2E8F0');
+      row.getCell(1).border    = thinBorder(GRID);
 
       row.getCell(2).font      = { bold: true };
       row.getCell(2).alignment = { horizontal: 'left', vertical: 'middle' };
-      row.getCell(2).border    = thinBorder('FFE2E8F0');
+      row.getCell(2).border    = thinBorder(GRID);
 
       for (let i = 3; i <= cellObjs.length + 2; i++) {
         const cell  = row.getCell(i);
@@ -431,12 +435,11 @@ const KIND_STYLE = {
         const style = KIND_STYLE[kind];
 
         cell.alignment = { horizontal: 'center', vertical: 'middle' };
-        cell.border    = thinBorder('FFE2E8F0');
+        cell.border    = thinBorder(GRID);
 
         if (style) {
           cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: style.bg } };
           cell.font = { color: { argb: style.fg }, bold: true };
-          if (style.hardBorder) cell.border = thinBorder('FF000000');
         }
         // kind '' (blank / pending) → no fill, plain cell
       }
@@ -447,7 +450,7 @@ const KIND_STYLE = {
 
     const legendTitleRow = sheet.addRow(['Legend']);
     sheet.mergeCells(legendTitleRow.number, 1, legendTitleRow.number, Math.min(8, totalCols));
-    legendTitleRow.getCell(1).font = { bold: true, size: 12 };
+    legendTitleRow.getCell(1).font = { bold: true, size: 12, color: { argb: 'FF334155' } };
 
     const legendItems = [
       { mark: 'P',      kind: 'P',          desc: 'Present — signed in (weekday 5h+, or any weekend sign-in)' },
@@ -460,18 +463,20 @@ const KIND_STYLE = {
     ];
 
     legendItems.forEach((item) => {
-      const lr    = sheet.addRow([item.mark, item.desc]);
       const style = KIND_STYLE[item.kind];
+      if (!style) return; // safety: skip any kind missing from KIND_STYLE instead of crashing
+
+      const lr = sheet.addRow([item.mark, item.desc]);
 
       const markCell = lr.getCell(1);
       markCell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: style.bg } };
       markCell.font      = { color: { argb: style.fg }, bold: true };
       markCell.alignment = { horizontal: 'center', vertical: 'middle' };
-      markCell.border    = thinBorder('FF000000');
+      markCell.border    = thinBorder(GRID);
 
       const descCell = lr.getCell(2);
       descCell.alignment = { horizontal: 'left', vertical: 'middle' };
-      descCell.font      = { size: 11 };
+      descCell.font      = { size: 11, color: { argb: 'FF475569' } };
       sheet.mergeCells(lr.number, 2, lr.number, Math.min(8, totalCols));
     });
 
