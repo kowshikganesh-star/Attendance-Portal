@@ -284,16 +284,17 @@ const AllReports = () => {
 
   // ── Monthly Summary Export (styled .xlsx: employee rows × day columns) ──
   // Base look: indigo title + header, bright blue weekend columns, green P.
-  // LOP / HD-LOP use soft, distinguishable fills so their sub-types read apart.
+  // Marker cells get a black outline (like the screenshot); weekends keep a
+  // soft blue border so the Sat/Sun block reads as one clean column.
   //
-  //   P            green        → present (weekday 5h+, or any weekend sign-in)
-  //   HD-LOP(leave)light amber  → approved half-day (HD_LOP) leave  (leave wins)
-  //   HD-LOP(work) deeper amber → worked 4–5h on a weekday
-  //   LOP(leave)   pale red     → approved loss-of-pay leave  (leave wins)
-  //   LOP(short)   light red    → worked under 4h on a weekday (short day)
-  //   LOP(absent)  deeper red   → past weekday, no leave, no sign-in
-  //   H            blue         → weekend, no work (holiday)
-  //   ''           blank        → today, not clocked in yet (pending)
+  //   P            green       → present (weekday 5h+, or any weekend sign-in)
+  //   HD-LOP(leave)pale amber  → approved half-day (HD_LOP) leave  (leave wins)
+  //   HD-LOP(work) deep amber  → worked 4–5h on a weekday
+  //   LOP(leave)   pale red    → approved loss-of-pay leave  (leave wins)
+  //   LOP(short)   medium red  → worked under 4h on a weekday (short day)
+  //   LOP(absent)  strong red  → past weekday, no leave, no sign-in (stands out)
+  //   H            blue        → weekend, no work (holiday)
+  //   ''           blank       → today, not clocked in yet (pending)
   const exportMonthlySummaryXLSX = async () => {
     const dates = getDatesToEnumerate(fetchMonth, ''); // full month, ignoring the date filter
 
@@ -327,16 +328,17 @@ const AllReports = () => {
       right:  { style: 'thin', color: { argb: color } },
     });
 
-    // Cell color map — bright green/blue base, soft distinguishable LOP/HD-LOP.
+    // Cell color map — bright base, black-bordered markers.
+    // Red severity ramps: approved leave (palest) → short hours → absent (strongest).
     // "label" is the professional name used in the legend table.
     const KIND_STYLE = {
-      P:          { bg: 'FFD1FAE5', fg: 'FF047857', label: 'Present' },                 // green
-      HD_LEAVE:   { bg: 'FFFFF8E1', fg: 'FF8D6E00', label: 'Half Day (Approved)' },     // light amber
-      HD_WORK:    { bg: 'FFFCE7B3', fg: 'FF6B5200', label: 'Half Day (Short Hours)' },  // deeper amber
-      LOP_LEAVE:  { bg: 'FFFDECEA', fg: 'FFB4413A', label: 'LOP (Approved Leave)' },    // pale red
-      LOP_SHORT:  { bg: 'FFF9D9D6', fg: 'FF9E362F', label: 'LOP (Short Hours)' },       // light red
-      LOP_ABSENT: { bg: 'FFF2B8B2', fg: 'FF7A2820', label: 'LOP (Absent)' },            // deeper red
-      H:          { bg: 'FFDCEAFB', fg: 'FF1D4ED8', label: 'Holiday / Weekend' },       // blue
+      P:          { bg: 'FFD1FAE5', fg: 'FF047857', label: 'Present',                hardBorder: true  }, // green
+      HD_LEAVE:   { bg: 'FFFFF3C4', fg: 'FF92700A', label: 'Half Day (Approved)',    hardBorder: true  }, // pale amber
+      HD_WORK:    { bg: 'FFF6A609', fg: 'FF5A3D00', label: 'Half Day (Short Hours)', hardBorder: true  }, // deep amber/orange
+      LOP_LEAVE:  { bg: 'FFFDECEA', fg: 'FFB4413A', label: 'LOP (Approved Leave)',   hardBorder: true  }, // pale red
+      LOP_SHORT:  { bg: 'FFF2B8B2', fg: 'FF7A2820', label: 'LOP (Short Hours)',      hardBorder: true  }, // medium red
+      LOP_ABSENT: { bg: 'FFEF9A93', fg: 'FF7A1C14', label: 'LOP (Absent)',           hardBorder: true  }, // strong red — no-show stands out
+      H:          { bg: 'FFDCEAFB', fg: 'FF1D4ED8', label: 'Holiday / Weekend',      hardBorder: false }, // blue (soft border)
     };
 
     // Title row — indigo
@@ -414,7 +416,7 @@ const AllReports = () => {
 
         // ── No leave, no clock-in ──
         if (isToday) return { v: '', kind: '' };          // today, not clocked in yet → pending
-        return { v: 'LOP', kind: 'LOP_ABSENT' };          // past weekday, absent → deeper red
+        return { v: 'LOP', kind: 'LOP_ABSENT' };          // past weekday, absent → strong red
       });
 
       const row = sheet.addRow([idx + 1, emp.email, ...cellObjs.map((c) => c.v)]);
@@ -439,6 +441,7 @@ const AllReports = () => {
         if (style) {
           cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: style.bg } };
           cell.font = { color: { argb: style.fg }, bold: true };
+          if (style.hardBorder) cell.border = thinBorder('FF000000'); // black outline like the screenshot
         } else if (isWeekend) {
           // Blank weekend cell (rare) — keep the light blue wash for consistency
           cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDCEAFB' } };
@@ -458,7 +461,7 @@ const AllReports = () => {
       cell.font      = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
       cell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4F46E5' } }; // indigo-600
       cell.alignment = { horizontal: c === 1 ? 'center' : 'left', vertical: 'middle' };
-      cell.border    = thinBorder('FF334155');
+      cell.border    = thinBorder('FF000000');
     });
     sheet.mergeCells(legHeader.number, 2, legHeader.number, Math.min(8, totalCols));
     legHeader.height = 22;
@@ -484,12 +487,12 @@ const AllReports = () => {
       markCell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: style.bg } };
       markCell.font      = { color: { argb: style.fg }, bold: true };
       markCell.alignment = { horizontal: 'center', vertical: 'middle' };
-      markCell.border    = thinBorder('FFB6C0CE');
+      markCell.border    = thinBorder('FF000000');
 
       const descCell = lr.getCell(2);
       descCell.alignment = { horizontal: 'left', vertical: 'middle' };
       descCell.font      = { size: 11, color: { argb: 'FF334155' } };
-      descCell.border    = thinBorder('FFB6C0CE');
+      descCell.border    = thinBorder('FF000000');
       sheet.mergeCells(lr.number, 2, lr.number, Math.min(8, totalCols));
     });
 
