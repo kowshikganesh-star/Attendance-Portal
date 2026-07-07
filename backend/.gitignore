@@ -1,4 +1,4 @@
 # create .gitignore file
 node_modules/
 .env
-dist/
+dist/.env
