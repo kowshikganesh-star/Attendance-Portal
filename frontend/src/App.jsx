@@ -12,6 +12,7 @@ import AllReports                from './pages/AllReports';
 import UserManagement            from './pages/UserManagement';
 import MyLeaves                  from './pages/MyLeaves';
 import AdminLeaves               from './pages/AdminLeaves';
+import LeaveBalances from './pages/LeaveBalances';
 
 const App = () => {
   return (
@@ -37,7 +38,9 @@ const App = () => {
           <Route path="/admin/users" element={
             <ProtectedRoute allowedRoles={['ADMIN']}><UserManagement /></ProtectedRoute>
           }/>
-
+          <Route path="/admin/leave-balances" element={
+          <ProtectedRoute allowedRoles={['ADMIN']}><LeaveBalances /> </ProtectedRoute>
+          }/>
           {/* Employee routes */}
           <Route path="/employee/dashboard" element={
             <ProtectedRoute allowedRoles={['EMPLOYEE']}><EmployeeDashboard /></ProtectedRoute>
@@ -51,6 +54,7 @@ const App = () => {
           <Route path="/employee/leaves" element={
             <ProtectedRoute allowedRoles={['EMPLOYEE']}><MyLeaves /></ProtectedRoute>
           }/>
+          
 
           {/* Default */}
           <Route path="*" element={<Navigate to="/login" replace />} />

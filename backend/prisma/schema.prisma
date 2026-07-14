@@ -21,6 +21,7 @@ model User {
   attendances    Attendance[]
   reviewedLeaves LeaveRequest[] @relation("ReviewedLeaves")
   leaveRequests  LeaveRequest[]
+  leaveAllowances LeaveAllowance[] 
 
   @@map("users")
 }
@@ -58,6 +59,20 @@ model LeaveRequest {
   user        User        @relation(fields: [userId], references: [id])
 
   @@map("leave_requests")
+}
+
+model LeaveAllowance {
+  id        Int       @id @default(autoincrement())
+  userId    Int
+  year      Int                     // e.g. 2026 — allowances reset per year
+  type      LeaveType               // only SL, CL, PL are used (LOP/HD_LOP are unpaid)
+  allowed   Int                     // admin sets this manually
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  user      User      @relation(fields: [userId], references: [id])
+
+  @@unique([userId, year, type])    // one allowance row per person/year/type
+  @@map("leave_allowances")
 }
 
 enum Role {

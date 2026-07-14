@@ -8,6 +8,8 @@ import userRoutes       from './routes/user.routes.js';
 import reportRoutes     from './routes/report.routes.js';
 import leaveRoutes      from './routes/leave.routes.js';
 import { autoClockOutInactive } from './controllers/attendance.controller.js';
+import leaveBalanceRoutes from './routes/leaveBalance.routes.js';
+
 
 dotenv.config();
 
@@ -35,6 +37,9 @@ app.use('/api/attendance', attendanceRoutes);
 app.use('/api/users',      userRoutes);
 app.use('/api/reports',    reportRoutes);
 app.use('/api/leaves',     leaveRoutes);
+//
+app.use('/api/leave-balances', leaveBalanceRoutes);
+
 
 // ── Health check ──────────────────────────────────────────
 app.get('/api/health', (req, res) => {

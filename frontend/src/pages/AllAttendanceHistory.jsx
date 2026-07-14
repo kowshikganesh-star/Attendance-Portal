@@ -14,6 +14,9 @@ const API = import.meta.env.VITE_API_URL;
 
 const toDateStr = (d) => new Date(d).toLocaleDateString('en-CA');
 
+// Leave types that have a yearly balance (LOP / HD_LOP are unpaid → no limit)
+const BALANCE_TYPES = ['SL', 'CL', 'PL'];
+
 // ── Group raw records by employee + date ──────────────────
 const groupRecords = (records) => {
   const grouped = {};
@@ -38,17 +41,14 @@ const groupRecords = (records) => {
     const g = grouped[key];
     g.sessions.push(record);
 
-    // Track first clock in
     if (new Date(record.clockIn) < new Date(g.firstClockIn)) {
       g.firstClockIn = record.clockIn;
     }
 
-    // Track last clock out
     if (record.clockOut) {
       if (!g.lastClockOut || new Date(record.clockOut) > new Date(g.lastClockOut)) {
         g.lastClockOut = record.clockOut;
       }
-      // Sum actual session durations only — gap time excluded ✅
       g.totalMs += new Date(record.clockOut) - new Date(record.clockIn);
     } else {
       g.hasActive = true;
@@ -91,10 +91,8 @@ const buildWorkBlocks = (sessions) => {
       : Infinity;
 
     if (gapMinutes < 30) {
-      // Same block — gap < 30 mins
       current.sessions.push(session);
       if (session.clockOut) {
-        // Add session duration only — NOT the gap ✅
         current.totalMs += new Date(session.clockOut) - new Date(session.clockIn);
         if (!current.lastClockOut ||
             new Date(session.clockOut) > new Date(current.lastClockOut)) {
@@ -104,7 +102,6 @@ const buildWorkBlocks = (sessions) => {
         current.hasActive = true;
       }
     } else {
-      // Gap >= 30 mins — new block (lunch break etc)
       blocks.push(current);
       current = {
         sessions:     [session],
@@ -206,57 +203,44 @@ const AllAttendanceHistory = () => {
       weekday: 'short', month: 'short', day: 'numeric',
     });
 
-  // showSeconds = true for individual sessions
-  // showSeconds = false for summary totals
   const formatMs = (ms, showSeconds = false) => {
     const h = Math.floor(ms / 3600000);
     const m = Math.floor((ms % 3600000) / 60000);
     const s = Math.floor((ms % 60000) / 1000);
-
-    // Always show seconds if duration is under 1 hour
-    // or if showSeconds explicitly requested
-    if (showSeconds || h === 0) {
-      return `${h}h ${m}m ${s}s`;
-    }
+    if (showSeconds || h === 0) return `${h}h ${m}m ${s}s`;
     return `${h}h ${m}m`;
   };
 
-  // Individual session duration — always show seconds
   const getDuration = (clockIn, clockOut) => {
     if (!clockOut) return '—';
     return formatMs(new Date(clockOut) - new Date(clockIn), true);
   };
 
-  // Flag unusual activity — more than 5 sessions in a day
   const isUnusual = (sessions) => sessions.length > 5;
 
   // ── CSV Export ────────────────────────────────────────────
+  // One row per session. Columns:
+  //   Date, Employee Name, Email, Clock In, Clock Out, Duration, Location
   const exportCSV = () => {
     if (records.length === 0) {
       toast.error('No records to export.');
       return;
     }
 
-    // Format time as 09:18:00 AM
     const fmtTime = (d) => d
       ? new Date(d).toLocaleTimeString('en-US', {
-          hour:   '2-digit',
-          minute: '2-digit',
-          second: '2-digit',
-          hour12: true,
+          hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true,
         })
       : '—';
 
-    // Format date WITHOUT commas → 05 Jun 2026
     const fmtDate = (dateStr) => {
-      const d = new Date(dateStr + 'T00:00:00');
+      const d     = new Date(dateStr + 'T00:00:00');
       const day   = String(d.getDate()).padStart(2, '0');
       const month = d.toLocaleString('en-US', { month: 'short' });
       const year  = d.getFullYear();
       return `${day} ${month} ${year}`;
     };
 
-    // Format duration with seconds
     const fmtDuration = (ms) => {
       if (!ms || ms < 0) return '0h 0m 0s';
       const h = Math.floor(ms / 3600000);
@@ -265,26 +249,18 @@ const AllAttendanceHistory = () => {
       return `${h}h ${m}m ${s}s`;
     };
 
-    // Escape field (wrap in quotes if has comma)
     const esc = (val) => {
       const str = String(val ?? '—');
       return str.includes(',') ? `"${str.replace(/"/g, '""')}"` : str;
     };
 
-    // Headers — simple and clean
     const headers = [
-      'Employee Name',
-      'Email',
-      'Date',
-      'Clock In',
-      'Clock Out',
-      'Duration',
-      'Location',
+      'Date', 'Employee Name', 'Email',
+      'Clock In', 'Clock Out', 'Duration', 'Location',
     ];
 
     const rows = [];
 
-    // One row per session per employee
     grouped.forEach((g) => {
       const sortedSessions = [...g.sessions].sort(
         (a, b) => new Date(a.clockIn) - new Date(b.clockIn)
@@ -296,9 +272,9 @@ const AllAttendanceHistory = () => {
           : null;
 
         rows.push([
+          fmtDate(g.date),
           esc(g.user.name),
           esc(g.user.email),
-          fmtDate(g.date),
           fmtTime(session.clockIn),
           session.clockOut ? fmtTime(session.clockOut) : 'Active',
           sessionMs !== null ? fmtDuration(sessionMs) : 'Active',
@@ -325,46 +301,55 @@ const AllAttendanceHistory = () => {
   };
 
   // ── Monthly Summary Export (styled .xlsx: employee rows × day columns) ──
-  // Does its own dedicated fetch for the target month's attendance + approved
-  // LOP/HD_LOP leaves, independent of whatever filter mode is currently active.
   //
-  // Marker priority on a WEEKDAY: approved leave → hours worked → absent.
-  //   Weekend (Sat/Sun): worked → P (any hours), otherwise H (holiday)
+  // Day markers (weekday priority: approved leave → hours worked → absent):
+  //   Weekend: worked → P, otherwise H
   //   HD_LOP leave → HD-LOP  |  LOP leave → LOP   (leave always wins)
   //   No leave, finished weekday:  <4h → LOP,  4h–5h → HD-LOP,  5h+ → P
   //   No leave, no clock-in, past weekday → LOP (absent)
-  //   Today / still-active session → P (not judged) ;  today, no clock-in → blank
+  //   Today / still-active → P ;  today, no clock-in → blank
+  //
+  // After the day grid, three LEAVE BALANCE columns (SL / CL / PL) show the
+  // employee's YEARLY position as "used / allowed" — same numbers as the
+  // Leave Balances page. Used is counted in working days (weekends skipped).
   const exportMonthlySummaryXLSX = async () => {
     const targetMonth = filterType === 'month'
       ? month
       : (startDate ? startDate.slice(0, 7) : month);
 
     try {
+      const year = parseInt(targetMonth.slice(0, 4), 10);
+
       const params = { month: targetMonth };
       if (selectedUser) params.userId = selectedUser;
 
       const leaveParams = { status: 'APPROVED' };
       if (selectedUser) leaveParams.userId = selectedUser;
 
-      const [attendanceRes, lopRes, hdLopRes] = await Promise.all([
+      const [attendanceRes, lopRes, hdLopRes, balanceRes] = await Promise.all([
         axios.get(`${API}/attendance/history/all`, { params }),
         axios.get(`${API}/leaves`, { params: { ...leaveParams, type: 'LOP' } }),
         axios.get(`${API}/leaves`, { params: { ...leaveParams, type: 'HD_LOP' } }),
+        // Leave balances are optional — if this fails, the export still works
+        axios.get(`${API}/leave-balances`, { params: { year } }).catch(() => null),
       ]);
 
       const monthRecords   = attendanceRes.data.records;
       const monthEmployees = attendanceRes.data.employees;
-      const lopLeaves       = [...lopRes.data.leaves, ...hdLopRes.data.leaves];
+      const lopLeaves      = [...lopRes.data.leaves, ...hdLopRes.data.leaves];
+
+      // userId -> { SL: {allowed, used, remaining}, CL: {...}, PL: {...} }
+      const balanceByUser = {};
+      if (balanceRes?.data?.rows) {
+        balanceRes.data.rows.forEach((r) => { balanceByUser[r.id] = r.balances || {}; });
+      }
 
       // Per employee-day: total worked ms + whether a session is still open.
-      // Needed so the summary can judge short days (<4h / 4–5h) by hours worked.
       const attendanceByKey = {};
       monthRecords.forEach((record) => {
         const date = toDateStr(record.clockIn);
         const key  = `${record.userId}_${date}`;
-        if (!attendanceByKey[key]) {
-          attendanceByKey[key] = { totalMs: 0, hasActive: false };
-        }
+        if (!attendanceByKey[key]) attendanceByKey[key] = { totalMs: 0, hasActive: false };
         const g = attendanceByKey[key];
         if (record.clockOut) {
           g.totalMs += new Date(record.clockOut) - new Date(record.clockIn);
@@ -388,13 +373,14 @@ const AllAttendanceHistory = () => {
         return day === 0 || day === 6;
       });
 
-      const totalCols  = 2 + dates.length;
-      const monthTitle = new Date(targetMonth + '-01').toLocaleDateString('en-US', {
+      const FIRST_BAL_COL = 2 + dates.length + 1;             // first SL column
+      const totalCols     = 2 + dates.length + BALANCE_TYPES.length;
+      const monthTitle    = new Date(targetMonth + '-01').toLocaleDateString('en-US', {
         month: 'long', year: 'numeric',
       });
 
       const workbook = new ExcelJS.Workbook();
-      const sheet     = workbook.addWorksheet('Monthly Summary');
+      const sheet    = workbook.addWorksheet('Monthly Summary');
 
       const thinBorder = (color) => ({
         top:    { style: 'thin', color: { argb: color } },
@@ -403,75 +389,86 @@ const AllAttendanceHistory = () => {
         right:  { style: 'thin', color: { argb: color } },
       });
 
-      // Cell color map — bright base, black-bordered markers.
-      // Red severity ramps: approved leave (palest) → short hours → absent (strongest).
-      // "label" is the professional name used in the legend table.
       const KIND_STYLE = {
-        P:          { bg: 'FFD1FAE5', fg: 'FF047857', label: 'Present',                hardBorder: true  }, // green
-        HD_LEAVE:   { bg: 'FFFFF3C4', fg: 'FF92700A', label: 'Half Day (Approved)',    hardBorder: true  }, // pale amber
-        HD_WORK:    { bg: 'FFF6A609', fg: 'FF5A3D00', label: 'Half Day (Short Hours)', hardBorder: true  }, // deep amber/orange
-        LOP_LEAVE:  { bg: 'FFFDECEA', fg: 'FFB4413A', label: 'LOP (Approved Leave)',   hardBorder: true  }, // pale red
-        LOP_SHORT:  { bg: 'FFF2B8B2', fg: 'FF7A2820', label: 'LOP (Short Hours)',      hardBorder: true  }, // medium red
-        LOP_ABSENT: { bg: 'FFEF9A93', fg: 'FF7A1C14', label: 'LOP (Absent)',           hardBorder: true  }, // strong red — no-show stands out
-        H:          { bg: 'FFDCEAFB', fg: 'FF1D4ED8', label: 'Holiday / Weekend',      hardBorder: false }, // blue (soft border)
+        P:          { bg: 'FFD1FAE5', fg: 'FF047857', label: 'Present',                hardBorder: true  },
+        HD_LEAVE:   { bg: 'FFFFF3C4', fg: 'FF92700A', label: 'Half Day (Approved)',    hardBorder: true  },
+        HD_WORK:    { bg: 'FFF6A609', fg: 'FF5A3D00', label: 'Half Day (Short Hours)', hardBorder: true  },
+        LOP_LEAVE:  { bg: 'FFFDECEA', fg: 'FFB4413A', label: 'LOP (Approved Leave)',   hardBorder: true  },
+        LOP_SHORT:  { bg: 'FFF2B8B2', fg: 'FF7A2820', label: 'LOP (Short Hours)',      hardBorder: true  },
+        LOP_ABSENT: { bg: 'FFEF9A93', fg: 'FF7A1C14', label: 'LOP (Absent)',           hardBorder: true  },
+        H:          { bg: 'FFDCEAFB', fg: 'FF1D4ED8', label: 'Holiday / Weekend',      hardBorder: false },
       };
 
-      // Title row — indigo
+      // Header colour for the balance columns (violet, distinct from the day grid)
+      const BAL_HEADER_BG = 'FF7C3AED';   // violet-600
+
+      // Title row
       const titleRow = sheet.addRow([`Attendance Summary — ${monthTitle}`]);
       sheet.mergeCells(titleRow.number, 1, titleRow.number, totalCols);
       titleRow.height = 26;
       const titleCell = titleRow.getCell(1);
       titleCell.font      = { bold: true, size: 13, color: { argb: 'FFFFFFFF' } };
-      titleCell.fill       = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF312E81' } }; // indigo-900
-      titleCell.alignment  = { horizontal: 'center', vertical: 'middle' };
+      titleCell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF312E81' } };
+      titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
 
-      // Header row — indigo, weekends in blue; day number + weekday on two lines
-      const headerRow = sheet.addRow(['#', 'Employee Email', ...dates.map((d) => {
-        const dt      = new Date(d + 'T00:00:00');
-        const dayNum  = String(dt.getDate()).padStart(2, '0');
-        const weekday = dt.toLocaleDateString('en-US', { weekday: 'short' });
-        return `${dayNum}\n${weekday}`;
-      })]);
+      // Header row — days, then the three balance columns
+      const headerRow = sheet.addRow([
+        '#',
+        'Employee Email',
+        ...dates.map((d) => {
+          const dt      = new Date(d + 'T00:00:00');
+          const dayNum  = String(dt.getDate()).padStart(2, '0');
+          const weekday = dt.toLocaleDateString('en-US', { weekday: 'short' });
+          return `${dayNum}\n${weekday}`;
+        }),
+        ...BALANCE_TYPES.map((t) => `${t}\nused/total`),
+      ]);
+
       headerRow.eachCell((cell, colNumber) => {
-        const isWeekend = colNumber > 2 && isWeekendCol[colNumber - 3];
-        cell.font      = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
-        cell.fill       = {
+        const isBalanceCol = colNumber >= FIRST_BAL_COL;
+        const isWeekend    = !isBalanceCol && colNumber > 2 && isWeekendCol[colNumber - 3];
+
+        cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
+        cell.fill = {
           type: 'pattern', pattern: 'solid',
-          fgColor: { argb: isWeekend ? 'FF2563EB' : 'FF4F46E5' }, // blue-600 for weekends, indigo-600 otherwise
+          fgColor: {
+            argb: isBalanceCol ? BAL_HEADER_BG
+                 : isWeekend   ? 'FF2563EB'   // blue-600 weekends
+                 : 'FF4F46E5',                // indigo-600 weekdays
+          },
         };
-        cell.alignment  = { horizontal: 'center', vertical: 'middle', wrapText: true };
-        cell.border     = thinBorder(isWeekend ? 'FF334155' : 'FFE2E8F0');
+        cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+        cell.border    = thinBorder(
+          isBalanceCol ? 'FF000000' : (isWeekend ? 'FF334155' : 'FFE2E8F0')
+        );
       });
       headerRow.getCell(1).font      = { bold: true, color: { argb: 'FFFFFFFF' } };
       headerRow.getCell(2).font      = { bold: true, color: { argb: 'FFFFFFFF' } };
       headerRow.getCell(2).alignment = { horizontal: 'left', vertical: 'middle' };
-      headerRow.height = 30;
+      headerRow.height = 32;
 
       // Data rows
-      const todayStr    = toDateStr(new Date());
-      const FOUR_HOURS  = 4 * 60 * 60 * 1000; // 14,400,000 ms
-      const FIVE_HOURS  = 5 * 60 * 60 * 1000; // 18,000,000 ms
+      const todayStr   = toDateStr(new Date());
+      const FOUR_HOURS = 4 * 60 * 60 * 1000;
+      const FIVE_HOURS = 5 * 60 * 60 * 1000;
 
       filteredEmployees.forEach((emp, idx) => {
-        // Each entry: { v: display text, kind: style key }
         const cellObjs = dates.map((date, dIdx) => {
           const key           = `${emp.id}_${date}`;
           const attendanceRow = attendanceByKey[key];
           const isWeekend     = isWeekendCol[dIdx];
           const isToday       = date === todayStr;
 
-          // ── Weekend: worked → P (any hours), otherwise Holiday ──
           if (isWeekend) {
             return attendanceRow ? { v: 'P', kind: 'P' } : { v: 'H', kind: 'H' };
           }
 
-          // ── Weekday: approved leave ALWAYS wins (even if they logged in) ──
           const hdLopLeave = lopLeaves.some(
             (leave) => leave.user.id === emp.id
               && leave.type === 'HD_LOP'
               && leaveCoversDate(leave, date)
           );
-          if (hdLopLeave) return { v: 'HD-LOP', kind: 'HD_LEAVE' }; // approved half-day leave
+          if (hdLopLeave) return { v: 'HD-LOP', kind: 'HD_LEAVE' };
 
           const lopLeave = lopLeaves.some(
             (leave) => leave.user.id === emp.id
@@ -480,21 +477,38 @@ const AllAttendanceHistory = () => {
           );
           if (lopLeave) return { v: 'LOP', kind: 'LOP_LEAVE' };
 
-          // ── No leave → judge by clock-in / hours worked ──
           if (attendanceRow) {
-            if (isToday || attendanceRow.hasActive) return { v: 'P', kind: 'P' }; // not finished → don't judge yet
+            if (isToday || attendanceRow.hasActive) return { v: 'P', kind: 'P' };
             const dur = attendanceRow.totalMs;
-            if (dur < FOUR_HOURS) return { v: 'LOP', kind: 'LOP_SHORT' };    // under 4h → short-day LOP
-            if (dur < FIVE_HOURS) return { v: 'HD-LOP', kind: 'HD_WORK' };   // 4h–5h   → worked half-day
-            return { v: 'P', kind: 'P' };                                    // 5h+     → present
+            if (dur < FOUR_HOURS) return { v: 'LOP',    kind: 'LOP_SHORT' };
+            if (dur < FIVE_HOURS) return { v: 'HD-LOP', kind: 'HD_WORK'   };
+            return { v: 'P', kind: 'P' };
           }
 
-          // ── No leave, no clock-in ──
-          if (isToday) return { v: '', kind: '' };          // today, not clocked in yet → pending
-          return { v: 'LOP', kind: 'LOP_ABSENT' };          // past weekday, absent → strong red
+          if (isToday) return { v: '', kind: '' };
+          return { v: 'LOP', kind: 'LOP_ABSENT' };
         });
 
-        const row = sheet.addRow([idx + 1, emp.email, ...cellObjs.map((c) => c.v)]);
+        // ── Leave balance cells: "used / allowed" per type ──
+        const bal = balanceByUser[emp.id] || {};
+        const balCells = BALANCE_TYPES.map((t) => {
+          const b = bal[t];
+          if (!b || b.allowed === null || b.allowed === undefined) {
+            // No allowance set — still show what they've used, if anything
+            return { v: b?.used ? `${b.used} / —` : '—', state: 'unset' };
+          }
+          const state = b.remaining < 0 ? 'over'
+                      : b.remaining <= 2 ? 'low'
+                      : 'ok';
+          return { v: `${b.used} / ${b.allowed}`, state };
+        });
+
+        const row = sheet.addRow([
+          idx + 1,
+          emp.email,
+          ...cellObjs.map((c) => c.v),
+          ...balCells.map((c) => c.v),
+        ]);
 
         row.getCell(1).font      = { bold: true };
         row.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' };
@@ -504,6 +518,7 @@ const AllAttendanceHistory = () => {
         row.getCell(2).alignment = { horizontal: 'left', vertical: 'middle' };
         row.getCell(2).border    = thinBorder('FFE2E8F0');
 
+        // Day cells
         for (let i = 3; i <= cellObjs.length + 2; i++) {
           const cell      = row.getCell(i);
           const kind      = cellObjs[i - 3].kind;
@@ -516,25 +531,39 @@ const AllAttendanceHistory = () => {
           if (style) {
             cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: style.bg } };
             cell.font = { color: { argb: style.fg }, bold: true };
-            if (style.hardBorder) cell.border = thinBorder('FF000000'); // black outline like the grid
+            if (style.hardBorder) cell.border = thinBorder('FF000000');
           } else if (isWeekend) {
-            // Blank weekend cell (rare) — keep the light blue wash for consistency
             cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDCEAFB' } };
             cell.font = { color: { argb: 'FF1D4ED8' }, bold: true };
           }
-          // kind '' on a weekday (pending today) → no fill, plain cell
         }
+
+        // Balance cells — coloured by how much is left
+        const BAL_STATE_STYLE = {
+          ok:    { bg: 'FFEDE9FE', fg: 'FF5B21B6' },  // violet tint — healthy
+          low:   { bg: 'FFFEF3C7', fg: 'FF92700A' },  // amber — 2 or fewer left
+          over:  { bg: 'FFFECACA', fg: 'FF991B1B' },  // red — over the limit
+          unset: { bg: 'FFF1F5F9', fg: 'FF94A3B8' },  // grey — no allowance set
+        };
+
+        balCells.forEach((c, bIdx) => {
+          const cell  = row.getCell(FIRST_BAL_COL + bIdx);
+          const style = BAL_STATE_STYLE[c.state];
+          cell.alignment = { horizontal: 'center', vertical: 'middle' };
+          cell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: style.bg } };
+          cell.font      = { color: { argb: style.fg }, bold: true, size: 10 };
+          cell.border    = thinBorder('FF000000');
+        });
       });
 
-      // ── Legend (styled as a bordered table, matching the grid above) ──
+      // ── Legend ──
       sheet.addRow([]); // spacer
 
-      // Legend header row (indigo, like the main header)
       const legHeader = sheet.addRow(['Marker', 'Meaning']);
       [1, 2].forEach((c) => {
         const cell = legHeader.getCell(c);
         cell.font      = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
-        cell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4F46E5' } }; // indigo-600
+        cell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4F46E5' } };
         cell.alignment = { horizontal: c === 1 ? 'center' : 'left', vertical: 'middle' };
         cell.border    = thinBorder('FF000000');
       });
@@ -553,7 +582,7 @@ const AllAttendanceHistory = () => {
 
       legendItems.forEach((item) => {
         const style = KIND_STYLE[item.kind];
-        if (!style) return; // safety: skip any kind missing from KIND_STYLE
+        if (!style) return;
 
         const lr = sheet.addRow([item.mark, style.label]);
         lr.height = 20;
@@ -571,14 +600,36 @@ const AllAttendanceHistory = () => {
         sheet.mergeCells(lr.number, 2, lr.number, Math.min(8, totalCols));
       });
 
+      // Leave-balance note under the legend
+      sheet.addRow([]);
+      const balNote = sheet.addRow([
+        'SL / CL / PL',
+        `Leave balance for ${year} — shown as "used / total". Remaining = total - used. `
+        + 'Counted in working days (weekends excluded). "—" means no allowance has been set. '
+        + 'LOP and HD-LOP are unpaid and have no balance.',
+      ]);
+      balNote.height = 32;
+      const bnMark = balNote.getCell(1);
+      bnMark.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEDE9FE' } };
+      bnMark.font      = { color: { argb: 'FF5B21B6' }, bold: true };
+      bnMark.alignment = { horizontal: 'center', vertical: 'middle' };
+      bnMark.border    = thinBorder('FF000000');
+
+      const bnDesc = balNote.getCell(2);
+      bnDesc.alignment = { horizontal: 'left', vertical: 'middle', wrapText: true };
+      bnDesc.font      = { size: 10, color: { argb: 'FF334155' } };
+      bnDesc.border    = thinBorder('FF000000');
+      sheet.mergeCells(balNote.number, 2, balNote.number, Math.min(10, totalCols));
+
       // Column widths
       sheet.getColumn(1).width = 8;
       sheet.getColumn(2).width = 26;
-      for (let i = 3; i <= dates.length + 2; i++) {
-        sheet.getColumn(i).width = 8; // HD-LOP needs the extra room
+      for (let i = 3; i <= dates.length + 2; i++) sheet.getColumn(i).width = 8;
+      for (let i = 0; i < BALANCE_TYPES.length; i++) {
+        sheet.getColumn(FIRST_BAL_COL + i).width = 11;   // "12 / 12" needs room
       }
 
-      // Freeze title row + header row + first two columns (serial number + employee email)
+      // Freeze title + header rows and the first two columns
       sheet.views = [{ state: 'frozen', xSplit: 2, ySplit: 2 }];
 
       const buffer = await workbook.xlsx.writeBuffer();
@@ -765,8 +816,6 @@ const AllAttendanceHistory = () => {
 
                 return (
                   <div key={g.key}>
-
-                    {/* ── Summary Row — clickable ── */}
                     <div
                       onClick={() => toggleExpand(g.key)}
                       className={`flex items-center justify-between px-6 py-4
@@ -775,7 +824,6 @@ const AllAttendanceHistory = () => {
                                    ? 'hover:bg-red-950/20 border-l-2 border-red-500/50'
                                    : 'hover:bg-slate-800/50'}`}
                     >
-                      {/* Employee */}
                       <div className="flex items-center gap-3 w-48">
                         <div className="w-9 h-9 bg-indigo-600 rounded-full flex items-center justify-center font-bold text-sm flex-shrink-0">
                           {g.user.name.charAt(0)}
@@ -784,26 +832,19 @@ const AllAttendanceHistory = () => {
                           <div className="flex items-center gap-2">
                             <p className="text-sm font-medium text-white">{g.user.name}</p>
                             {unusual && (
-                              <span className="text-xs text-red-400" title="Unusual activity">
-                                ⚠️
-                              </span>
+                              <span className="text-xs text-red-400" title="Unusual activity">⚠️</span>
                             )}
                           </div>
                           <p className="text-xs text-slate-400">{g.user.email}</p>
                         </div>
                       </div>
 
-                      {/* Date */}
-                      <div className="text-sm text-slate-300 w-28">
-                        {formatDate(g.date)}
-                      </div>
+                      <div className="text-sm text-slate-300 w-28">{formatDate(g.date)}</div>
 
-                      {/* First In */}
                       <div className="text-sm text-slate-300 w-24">
                         🟢 {formatTime(g.firstClockIn)}
                       </div>
 
-                      {/* Last Out — show Active if still open ✅ */}
                       <div className="text-sm text-slate-300 w-24">
                         {g.hasActive
                           ? '🟡 Active'
@@ -812,20 +853,17 @@ const AllAttendanceHistory = () => {
                             : '—'}
                       </div>
 
-                      {/* Total Hours — active sessions show In Progress ✅ */}
                       <div className="text-sm font-bold text-white w-20">
                         {g.hasActive && g.totalMs === 0
                           ? <span className="text-amber-400 text-xs">In progress</span>
                           : formatMs(g.totalMs)}
                       </div>
 
-                      {/* Sessions count */}
                       <div className={`text-xs w-24 ${unusual ? 'text-red-400' : 'text-slate-400'}`}>
                         {g.sessions.length} session{g.sessions.length > 1 ? 's' : ''}
                         {unusual && ' ⚠️'}
                       </div>
 
-                      {/* Status */}
                       <div className="w-24">
                         {g.hasActive ? (
                           <span className="inline-flex items-center gap-1.5 text-xs bg-amber-500/20 text-amber-400 border border-amber-500/30 px-2.5 py-1 rounded-full">
@@ -838,7 +876,6 @@ const AllAttendanceHistory = () => {
                         )}
                       </div>
 
-                      {/* Expand icon */}
                       <div className="text-slate-400 w-6">
                         {expanded[g.key]
                           ? <ChevronUp className="w-4 h-4" />
@@ -846,20 +883,14 @@ const AllAttendanceHistory = () => {
                       </div>
                     </div>
 
-                    {/* ── Expanded Work Blocks ── */}
                     {expanded[g.key] && (
                       <div className="bg-slate-950 border-t border-slate-800 px-6 py-4">
-
-                        {/* Unusual warning */}
                         {unusual && (
                           <div className="mb-4 px-4 py-3 bg-red-500/10 border border-red-500/20 rounded-xl">
-                            <p className="text-red-400 text-sm font-medium">
-                              ⚠️ Unusual Activity
-                            </p>
+                            <p className="text-red-400 text-sm font-medium">⚠️ Unusual Activity</p>
                             <p className="text-slate-400 text-xs mt-1">
                               {g.sessions.length} sessions in one day.
-                              All sessions are recorded accurately.
-                              Review if needed.
+                              All sessions are recorded accurately. Review if needed.
                             </p>
                           </div>
                         )}
@@ -870,10 +901,7 @@ const AllAttendanceHistory = () => {
 
                         <div className="space-y-4">
                           {workBlocks.map((block, bi) => (
-                            <div key={bi}
-                              className="bg-slate-900 rounded-xl overflow-hidden">
-
-                              {/* Block header */}
+                            <div key={bi} className="bg-slate-900 rounded-xl overflow-hidden">
                               <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
                                 <div className="flex items-center gap-3">
                                   <span className="text-xs font-bold text-indigo-400 bg-indigo-500/20 px-2 py-0.5 rounded-full">
@@ -891,26 +919,18 @@ const AllAttendanceHistory = () => {
                                   <span className="text-sm font-bold text-white">
                                     {formatMs(block.totalMs, true)}
                                   </span>
-                                  <p className="text-xs text-slate-500">
-                                    gaps not counted
-                                  </p>
+                                  <p className="text-xs text-slate-500">gaps not counted</p>
                                 </div>
                               </div>
 
-                              {/* All sessions in block — raw, no greying ✅ */}
                               <div className="divide-y divide-slate-800/50">
                                 {block.sessions.map((session, si) => (
-                                  <div key={session.id}
-                                    className="flex items-center gap-4 px-4 py-2.5">
-                                    <span className="text-xs text-slate-600 w-5">
-                                      {si + 1}
-                                    </span>
+                                  <div key={session.id} className="flex items-center gap-4 px-4 py-2.5">
+                                    <span className="text-xs text-slate-600 w-5">{si + 1}</span>
                                     <span className="text-xs text-slate-400">
                                       {formatTime(session.clockIn)}
                                       &nbsp;→&nbsp;
-                                      {session.clockOut
-                                        ? formatTime(session.clockOut)
-                                        : 'Active'}
+                                      {session.clockOut ? formatTime(session.clockOut) : 'Active'}
                                     </span>
                                     <span className="text-xs font-medium text-slate-300">
                                       {getDuration(session.clockIn, session.clockOut)}
@@ -922,7 +942,6 @@ const AllAttendanceHistory = () => {
                           ))}
                         </div>
 
-                        {/* Day total */}
                         <div className="mt-4 pt-3 border-t border-slate-800 flex justify-between items-center">
                           <span className="text-xs text-slate-500">
                             {g.sessions.length} raw session{g.sessions.length > 1 ? 's' : ''}
@@ -931,14 +950,11 @@ const AllAttendanceHistory = () => {
                           </span>
                           <span className="text-sm text-slate-400">
                             Total worked:&nbsp;
-                            <span className="text-white font-bold">
-                              {formatMs(g.totalMs)}
-                            </span>
+                            <span className="text-white font-bold">{formatMs(g.totalMs)}</span>
                           </span>
                         </div>
                       </div>
                     )}
-
                   </div>
                 );
               })}

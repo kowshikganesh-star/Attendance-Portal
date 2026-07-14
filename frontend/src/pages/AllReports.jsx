@@ -14,6 +14,9 @@ const API = import.meta.env.VITE_API_URL;
 
 const toDateStr = (d) => new Date(d).toLocaleDateString('en-CA');
 
+// Leave types that have a yearly balance (LOP / HD_LOP are unpaid → no limit)
+const BALANCE_TYPES = ['SL', 'CL', 'PL'];
+
 // ── Group raw attendance records by employee + date, keyed for fast lookup ──
 const groupByDay = (records) => {
   const grouped = {};
@@ -31,7 +34,7 @@ const groupByDay = (records) => {
         date,
         firstClockIn:  record.clockIn,
         lastClockOut:  record.clockOut || null,
-        firstLocation: record.location || null, // ← first login location
+        firstLocation: record.location || null,
         totalMs:       0,
         hasActive:     false,
       };
@@ -39,13 +42,11 @@ const groupByDay = (records) => {
 
     const g = grouped[key];
 
-    // Track first clock in + its location
     if (new Date(record.clockIn) < new Date(g.firstClockIn)) {
       g.firstClockIn  = record.clockIn;
       g.firstLocation = record.location || null;
     }
 
-    // Track last clock out
     if (record.clockOut) {
       if (!g.lastClockOut || new Date(record.clockOut) > new Date(g.lastClockOut)) {
         g.lastClockOut = record.clockOut;
@@ -56,10 +57,10 @@ const groupByDay = (records) => {
     }
   });
 
-  return grouped; // keyed object: `${userId}_${date}` -> row
+  return grouped;
 };
 
-// ── Which calendar dates should we produce rows for? Never enumerates future dates ──
+// ── Which calendar dates should we produce rows for? Never future dates ──
 const getDatesToEnumerate = (fetchMonth, selectedDate) => {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -93,9 +94,8 @@ const leaveCoversDate = (leave, dateStr) => {
 };
 
 // ── Build one row per employee per date ────────────────────
-// P    = clocked in that day
-// LOP  = no clock-in, but an approved LOP/HD_LOP leave covers that day
-// ''   = no clock-in and no leave (did not sign in) — row stays, fields blank
+// Still builds every combination (the exports rely on this), but the on-screen
+// table below only DISPLAYS the rows where the employee actually signed in.
 const buildReportRows = (attendanceByKey, lopLeaves, employees, dates, selectedUser) => {
   const filteredEmployees = selectedUser
     ? employees.filter((e) => e.id === parseInt(selectedUser))
@@ -143,20 +143,18 @@ const AllReports = () => {
   const navigate         = useNavigate();
 
   const today        = toDateStr(new Date());
-  const currentMonth  = today.slice(0, 7);
+  const currentMonth = today.slice(0, 7);
 
   const [month,        setMonth]        = useState(currentMonth);
-  const [selectedDate, setSelectedDate] = useState(''); // optional — overrides month when set
+  const [selectedDate, setSelectedDate] = useState('');
   const [selectedUser, setSelectedUser] = useState('');
   const [records,      setRecords]      = useState([]);
   const [lopLeaves,    setLopLeaves]    = useState([]);
   const [employees,    setEmployees]    = useState([]);
   const [loading,      setLoading]      = useState(true);
 
-  // The month we actually need attendance data for
   const fetchMonth = selectedDate ? selectedDate.slice(0, 7) : month;
 
-  // ── Fetch records ─────────────────────────────────────────
   const fetchRecords = useCallback(async () => {
     setLoading(true);
     try {
@@ -209,7 +207,7 @@ const AllReports = () => {
     return `${h}h ${m}m`;
   };
 
-  // ── CSV Export ────────────────────────────────────────────
+  // ── CSV Export (unchanged — already exports sign-ins only) ──
   const exportCSV = () => {
     const signedInRows = grouped.filter((g) => g.attendance === 'P');
 
@@ -245,15 +243,8 @@ const AllReports = () => {
     };
 
     const headers = [
-      'Date',
-      'Employee Name',
-      'Email',
-      'Attendance',
-      'First Clock In',
-      'Last Clock Out',
-      'Status',
-      'Total Duration',
-      'Location',
+      'Date', 'Employee Name', 'Email', 'Attendance',
+      'First Clock In', 'Last Clock Out', 'Status', 'Total Duration', 'Location',
     ];
 
     const rows = signedInRows.map((g) => [
@@ -282,19 +273,17 @@ const AllReports = () => {
     toast.success('CSV downloaded!');
   };
 
-  // ── Monthly Summary Export (styled .xlsx: employee rows × day columns) ──
-  // Base look: indigo title + header, bright blue weekend columns, green P.
-  // Marker cells get a black outline (like the screenshot); weekends keep a
-  // soft blue border so the Sat/Sun block reads as one clean column.
+  // ── Monthly Summary Export (unchanged — still covers every employee/day) ──
   //
-  //   P            green       → present (weekday 5h+, or any weekend sign-in)
-  //   HD-LOP(leave)pale amber  → approved half-day (HD_LOP) leave  (leave wins)
-  //   HD-LOP(work) deep amber  → worked 4–5h on a weekday
-  //   LOP(leave)   pale red    → approved loss-of-pay leave  (leave wins)
-  //   LOP(short)   medium red  → worked under 4h on a weekday (short day)
-  //   LOP(absent)  strong red  → past weekday, no leave, no sign-in (stands out)
-  //   H            blue        → weekend, no work (holiday)
-  //   ''           blank       → today, not clocked in yet (pending)
+  // Day markers (weekday priority: approved leave → hours worked → absent):
+  //   Weekend: worked → P, otherwise H
+  //   HD_LOP leave → HD-LOP  |  LOP leave → LOP   (leave always wins)
+  //   No leave, finished weekday:  <4h → LOP,  4h–5h → HD-LOP,  5h+ → P
+  //   No leave, no clock-in, past weekday → LOP (absent)
+  //   Today / still-active → P ;  today, no clock-in → blank
+  //
+  // After the day grid, three LEAVE BALANCE columns (SL / CL / PL) show the
+  // employee's YEARLY position as "used / allowed".
   const exportMonthlySummaryXLSX = async () => {
     const dates = getDatesToEnumerate(fetchMonth, ''); // full month, ignoring the date filter
 
@@ -303,233 +292,305 @@ const AllReports = () => {
       return;
     }
 
-    const filteredEmployees = selectedUser
-      ? employees.filter((e) => e.id === parseInt(selectedUser))
-      : employees;
+    try {
+      const year = parseInt(fetchMonth.slice(0, 4), 10);
 
-    const dayNumbers  = dates.map((d) => parseInt(d.slice(8, 10), 10));
-    const isWeekendCol = dates.map((d) => {
-      const day = new Date(d + 'T00:00:00').getDay(); // 0 = Sun, 6 = Sat
-      return day === 0 || day === 6;
-    });
+      const balanceRes = await axios
+        .get(`${API}/leave-balances`, { params: { year } })
+        .catch(() => null);
 
-    const totalCols  = 2 + dates.length;
-    const monthTitle = new Date(fetchMonth + '-01').toLocaleDateString('en-US', {
-      month: 'long', year: 'numeric',
-    });
+      const balanceByUser = {};
+      if (balanceRes?.data?.rows) {
+        balanceRes.data.rows.forEach((r) => { balanceByUser[r.id] = r.balances || {}; });
+      }
 
-    const workbook = new ExcelJS.Workbook();
-    const sheet     = workbook.addWorksheet('Monthly Summary');
+      const filteredEmployees = selectedUser
+        ? employees.filter((e) => e.id === parseInt(selectedUser))
+        : employees;
 
-    const thinBorder = (color) => ({
-      top:    { style: 'thin', color: { argb: color } },
-      left:   { style: 'thin', color: { argb: color } },
-      bottom: { style: 'thin', color: { argb: color } },
-      right:  { style: 'thin', color: { argb: color } },
-    });
-
-    // Cell color map — bright base, black-bordered markers.
-    // Red severity ramps: approved leave (palest) → short hours → absent (strongest).
-    // "label" is the professional name used in the legend table.
-    const KIND_STYLE = {
-      P:          { bg: 'FFD1FAE5', fg: 'FF047857', label: 'Present',                hardBorder: true  }, // green
-      HD_LEAVE:   { bg: 'FFFFF3C4', fg: 'FF92700A', label: 'Half Day (Approved)',    hardBorder: true  }, // pale amber
-      HD_WORK:    { bg: 'FFF6A609', fg: 'FF5A3D00', label: 'Half Day (Short Hours)', hardBorder: true  }, // deep amber/orange
-      LOP_LEAVE:  { bg: 'FFFDECEA', fg: 'FFB4413A', label: 'LOP (Approved Leave)',   hardBorder: true  }, // pale red
-      LOP_SHORT:  { bg: 'FFF2B8B2', fg: 'FF7A2820', label: 'LOP (Short Hours)',      hardBorder: true  }, // medium red
-      LOP_ABSENT: { bg: 'FFEF9A93', fg: 'FF7A1C14', label: 'LOP (Absent)',           hardBorder: true  }, // strong red — no-show stands out
-      H:          { bg: 'FFDCEAFB', fg: 'FF1D4ED8', label: 'Holiday / Weekend',      hardBorder: false }, // blue (soft border)
-    };
-
-    // Title row — indigo
-    const titleRow = sheet.addRow([`Attendance Summary — ${monthTitle}`]);
-    sheet.mergeCells(titleRow.number, 1, titleRow.number, totalCols);
-    titleRow.height = 26;
-    const titleCell = titleRow.getCell(1);
-    titleCell.font      = { bold: true, size: 13, color: { argb: 'FFFFFFFF' } };
-    titleCell.fill       = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF312E81' } }; // indigo-900
-    titleCell.alignment  = { horizontal: 'center', vertical: 'middle' };
-
-    // Header row — indigo, weekends in blue; day number + weekday on two lines
-    const headerRow = sheet.addRow(['#', 'Employee Email', ...dates.map((d) => {
-      const dt      = new Date(d + 'T00:00:00');
-      const dayNum  = String(dt.getDate()).padStart(2, '0');
-      const weekday = dt.toLocaleDateString('en-US', { weekday: 'short' });
-      return `${dayNum}\n${weekday}`;
-    })]);
-    headerRow.eachCell((cell, colNumber) => {
-      const isWeekend = colNumber > 2 && isWeekendCol[colNumber - 3];
-      cell.font      = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
-      cell.fill       = {
-        type: 'pattern', pattern: 'solid',
-        fgColor: { argb: isWeekend ? 'FF2563EB' : 'FF4F46E5' }, // blue-600 for weekends, indigo-600 otherwise
-      };
-      cell.alignment  = { horizontal: 'center', vertical: 'middle', wrapText: true };
-      cell.border     = thinBorder(isWeekend ? 'FF334155' : 'FFE2E8F0');
-    });
-    headerRow.getCell(1).font      = { bold: true, color: { argb: 'FFFFFFFF' } };
-    headerRow.getCell(2).font      = { bold: true, color: { argb: 'FFFFFFFF' } };
-    headerRow.getCell(2).alignment = { horizontal: 'left', vertical: 'middle' };
-    headerRow.height = 30;
-
-    // Data rows
-    const todayStr    = toDateStr(new Date());
-    const FOUR_HOURS  = 4 * 60 * 60 * 1000; // 14,400,000 ms
-    const FIVE_HOURS  = 5 * 60 * 60 * 1000; // 18,000,000 ms
-
-    filteredEmployees.forEach((emp, idx) => {
-      // Each entry: { v: display text, kind: style key }
-      const cellObjs = dates.map((date, dIdx) => {
-        const key           = `${emp.id}_${date}`;
-        const attendanceRow = attendanceByKey[key];
-        const isWeekend     = isWeekendCol[dIdx];
-        const isToday       = date === todayStr;
-
-        // ── Weekend: worked → P (any hours), otherwise Holiday ──
-        if (isWeekend) {
-          return attendanceRow ? { v: 'P', kind: 'P' } : { v: 'H', kind: 'H' };
-        }
-
-        // ── Weekday: approved leave ALWAYS wins (even if they logged in) ──
-        const hdLopLeave = lopLeaves.some(
-          (leave) => leave.user.id === emp.id
-            && leave.type === 'HD_LOP'
-            && leaveCoversDate(leave, date)
-        );
-        if (hdLopLeave) return { v: 'HD-LOP', kind: 'HD_LEAVE' }; // approved half-day leave
-
-        const lopLeave = lopLeaves.some(
-          (leave) => leave.user.id === emp.id
-            && leave.type === 'LOP'
-            && leaveCoversDate(leave, date)
-        );
-        if (lopLeave) return { v: 'LOP', kind: 'LOP_LEAVE' };
-
-        // ── No leave → judge by clock-in / hours worked ──
-        if (attendanceRow) {
-          if (isToday || attendanceRow.hasActive) return { v: 'P', kind: 'P' }; // not finished → don't judge yet
-          const dur = attendanceRow.totalMs;
-          if (dur < FOUR_HOURS) return { v: 'LOP', kind: 'LOP_SHORT' };    // under 4h → short-day LOP
-          if (dur < FIVE_HOURS) return { v: 'HD-LOP', kind: 'HD_WORK' };   // 4h–5h   → worked half-day
-          return { v: 'P', kind: 'P' };                                    // 5h+     → present
-        }
-
-        // ── No leave, no clock-in ──
-        if (isToday) return { v: '', kind: '' };          // today, not clocked in yet → pending
-        return { v: 'LOP', kind: 'LOP_ABSENT' };          // past weekday, absent → strong red
+      const isWeekendCol = dates.map((d) => {
+        const day = new Date(d + 'T00:00:00').getDay(); // 0 = Sun, 6 = Sat
+        return day === 0 || day === 6;
       });
 
-      const row = sheet.addRow([idx + 1, emp.email, ...cellObjs.map((c) => c.v)]);
+      const FIRST_BAL_COL = 2 + dates.length + 1;
+      const totalCols     = 2 + dates.length + BALANCE_TYPES.length;
+      const monthTitle    = new Date(fetchMonth + '-01').toLocaleDateString('en-US', {
+        month: 'long', year: 'numeric',
+      });
 
-      row.getCell(1).font      = { bold: true };
-      row.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' };
-      row.getCell(1).border    = thinBorder('FFE2E8F0');
+      const workbook = new ExcelJS.Workbook();
+      const sheet    = workbook.addWorksheet('Monthly Summary');
 
-      row.getCell(2).font      = { bold: true };
-      row.getCell(2).alignment = { horizontal: 'left', vertical: 'middle' };
-      row.getCell(2).border    = thinBorder('FFE2E8F0');
+      const thinBorder = (color) => ({
+        top:    { style: 'thin', color: { argb: color } },
+        left:   { style: 'thin', color: { argb: color } },
+        bottom: { style: 'thin', color: { argb: color } },
+        right:  { style: 'thin', color: { argb: color } },
+      });
 
-      for (let i = 3; i <= cellObjs.length + 2; i++) {
-        const cell      = row.getCell(i);
-        const kind      = cellObjs[i - 3].kind;
-        const isWeekend = isWeekendCol[i - 3];
-        const style     = KIND_STYLE[kind];
+      const KIND_STYLE = {
+        P:          { bg: 'FFD1FAE5', fg: 'FF047857', label: 'Present',                hardBorder: true  },
+        HD_LEAVE:   { bg: 'FFFFF3C4', fg: 'FF92700A', label: 'Half Day (Approved)',    hardBorder: true  },
+        HD_WORK:    { bg: 'FFF6A609', fg: 'FF5A3D00', label: 'Half Day (Short Hours)', hardBorder: true  },
+        LOP_LEAVE:  { bg: 'FFFDECEA', fg: 'FFB4413A', label: 'LOP (Approved Leave)',   hardBorder: true  },
+        LOP_SHORT:  { bg: 'FFF2B8B2', fg: 'FF7A2820', label: 'LOP (Short Hours)',      hardBorder: true  },
+        LOP_ABSENT: { bg: 'FFEF9A93', fg: 'FF7A1C14', label: 'LOP (Absent)',           hardBorder: true  },
+        H:          { bg: 'FFDCEAFB', fg: 'FF1D4ED8', label: 'Holiday / Weekend',      hardBorder: false },
+      };
 
-        cell.alignment = { horizontal: 'center', vertical: 'middle' };
-        cell.border    = thinBorder('FFE2E8F0');
+      const BAL_HEADER_BG = 'FF7C3AED';
 
-        if (style) {
-          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: style.bg } };
-          cell.font = { color: { argb: style.fg }, bold: true };
-          if (style.hardBorder) cell.border = thinBorder('FF000000'); // black outline like the screenshot
-        } else if (isWeekend) {
-          // Blank weekend cell (rare) — keep the light blue wash for consistency
-          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDCEAFB' } };
-          cell.font = { color: { argb: 'FF1D4ED8' }, bold: true };
+      const titleRow = sheet.addRow([`Attendance Summary — ${monthTitle}`]);
+      sheet.mergeCells(titleRow.number, 1, titleRow.number, totalCols);
+      titleRow.height = 26;
+      const titleCell = titleRow.getCell(1);
+      titleCell.font      = { bold: true, size: 13, color: { argb: 'FFFFFFFF' } };
+      titleCell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF312E81' } };
+      titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+
+      const headerRow = sheet.addRow([
+        '#',
+        'Employee Email',
+        ...dates.map((d) => {
+          const dt      = new Date(d + 'T00:00:00');
+          const dayNum  = String(dt.getDate()).padStart(2, '0');
+          const weekday = dt.toLocaleDateString('en-US', { weekday: 'short' });
+          return `${dayNum}\n${weekday}`;
+        }),
+        ...BALANCE_TYPES.map((t) => `${t}\nused/total`),
+      ]);
+
+      headerRow.eachCell((cell, colNumber) => {
+        const isBalanceCol = colNumber >= FIRST_BAL_COL;
+        const isWeekend    = !isBalanceCol && colNumber > 2 && isWeekendCol[colNumber - 3];
+
+        cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
+        cell.fill = {
+          type: 'pattern', pattern: 'solid',
+          fgColor: {
+            argb: isBalanceCol ? BAL_HEADER_BG : isWeekend ? 'FF2563EB' : 'FF4F46E5',
+          },
+        };
+        cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+        cell.border    = thinBorder(
+          isBalanceCol ? 'FF000000' : (isWeekend ? 'FF334155' : 'FFE2E8F0')
+        );
+      });
+      headerRow.getCell(1).font      = { bold: true, color: { argb: 'FFFFFFFF' } };
+      headerRow.getCell(2).font      = { bold: true, color: { argb: 'FFFFFFFF' } };
+      headerRow.getCell(2).alignment = { horizontal: 'left', vertical: 'middle' };
+      headerRow.height = 32;
+
+      const todayStr   = toDateStr(new Date());
+      const FOUR_HOURS = 4 * 60 * 60 * 1000;
+      const FIVE_HOURS = 5 * 60 * 60 * 1000;
+
+      filteredEmployees.forEach((emp, idx) => {
+        const cellObjs = dates.map((date, dIdx) => {
+          const key           = `${emp.id}_${date}`;
+          const attendanceRow = attendanceByKey[key];
+          const isWeekend     = isWeekendCol[dIdx];
+          const isToday       = date === todayStr;
+
+          if (isWeekend) {
+            return attendanceRow ? { v: 'P', kind: 'P' } : { v: 'H', kind: 'H' };
+          }
+
+          const hdLopLeave = lopLeaves.some(
+            (leave) => leave.user.id === emp.id
+              && leave.type === 'HD_LOP'
+              && leaveCoversDate(leave, date)
+          );
+          if (hdLopLeave) return { v: 'HD-LOP', kind: 'HD_LEAVE' };
+
+          const lopLeave = lopLeaves.some(
+            (leave) => leave.user.id === emp.id
+              && leave.type === 'LOP'
+              && leaveCoversDate(leave, date)
+          );
+          if (lopLeave) return { v: 'LOP', kind: 'LOP_LEAVE' };
+
+          if (attendanceRow) {
+            if (isToday || attendanceRow.hasActive) return { v: 'P', kind: 'P' };
+            const dur = attendanceRow.totalMs;
+            if (dur < FOUR_HOURS) return { v: 'LOP',    kind: 'LOP_SHORT' };
+            if (dur < FIVE_HOURS) return { v: 'HD-LOP', kind: 'HD_WORK'   };
+            return { v: 'P', kind: 'P' };
+          }
+
+          if (isToday) return { v: '', kind: '' };
+          return { v: 'LOP', kind: 'LOP_ABSENT' };
+        });
+
+        const bal = balanceByUser[emp.id] || {};
+        const balCells = BALANCE_TYPES.map((t) => {
+          const b = bal[t];
+          if (!b || b.allowed === null || b.allowed === undefined) {
+            return { v: b?.used ? `${b.used} / —` : '—', state: 'unset' };
+          }
+          const state = b.remaining < 0 ? 'over'
+                      : b.remaining <= 2 ? 'low'
+                      : 'ok';
+          return { v: `${b.used} / ${b.allowed}`, state };
+        });
+
+        const row = sheet.addRow([
+          idx + 1,
+          emp.email,
+          ...cellObjs.map((c) => c.v),
+          ...balCells.map((c) => c.v),
+        ]);
+
+        row.getCell(1).font      = { bold: true };
+        row.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' };
+        row.getCell(1).border    = thinBorder('FFE2E8F0');
+
+        row.getCell(2).font      = { bold: true };
+        row.getCell(2).alignment = { horizontal: 'left', vertical: 'middle' };
+        row.getCell(2).border    = thinBorder('FFE2E8F0');
+
+        for (let i = 3; i <= cellObjs.length + 2; i++) {
+          const cell      = row.getCell(i);
+          const kind      = cellObjs[i - 3].kind;
+          const isWeekend = isWeekendCol[i - 3];
+          const style     = KIND_STYLE[kind];
+
+          cell.alignment = { horizontal: 'center', vertical: 'middle' };
+          cell.border    = thinBorder('FFE2E8F0');
+
+          if (style) {
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: style.bg } };
+            cell.font = { color: { argb: style.fg }, bold: true };
+            if (style.hardBorder) cell.border = thinBorder('FF000000');
+          } else if (isWeekend) {
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDCEAFB' } };
+            cell.font = { color: { argb: 'FF1D4ED8' }, bold: true };
+          }
         }
-        // kind '' on a weekday (pending today) → no fill, plain cell
+
+        const BAL_STATE_STYLE = {
+          ok:    { bg: 'FFEDE9FE', fg: 'FF5B21B6' },
+          low:   { bg: 'FFFEF3C7', fg: 'FF92700A' },
+          over:  { bg: 'FFFECACA', fg: 'FF991B1B' },
+          unset: { bg: 'FFF1F5F9', fg: 'FF94A3B8' },
+        };
+
+        balCells.forEach((c, bIdx) => {
+          const cell  = row.getCell(FIRST_BAL_COL + bIdx);
+          const style = BAL_STATE_STYLE[c.state];
+          cell.alignment = { horizontal: 'center', vertical: 'middle' };
+          cell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: style.bg } };
+          cell.font      = { color: { argb: style.fg }, bold: true, size: 10 };
+          cell.border    = thinBorder('FF000000');
+        });
+      });
+
+      // ── Legend ──
+      sheet.addRow([]);
+
+      const legHeader = sheet.addRow(['Marker', 'Meaning']);
+      [1, 2].forEach((c) => {
+        const cell = legHeader.getCell(c);
+        cell.font      = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+        cell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4F46E5' } };
+        cell.alignment = { horizontal: c === 1 ? 'center' : 'left', vertical: 'middle' };
+        cell.border    = thinBorder('FF000000');
+      });
+      sheet.mergeCells(legHeader.number, 2, legHeader.number, Math.min(8, totalCols));
+      legHeader.height = 22;
+
+      const legendItems = [
+        { mark: 'P',      kind: 'P'          },
+        { mark: 'HD-LOP', kind: 'HD_LEAVE'   },
+        { mark: 'HD-LOP', kind: 'HD_WORK'    },
+        { mark: 'LOP',    kind: 'LOP_LEAVE'  },
+        { mark: 'LOP',    kind: 'LOP_SHORT'  },
+        { mark: 'LOP',    kind: 'LOP_ABSENT' },
+        { mark: 'H',      kind: 'H'          },
+      ];
+
+      legendItems.forEach((item) => {
+        const style = KIND_STYLE[item.kind];
+        if (!style) return;
+
+        const lr = sheet.addRow([item.mark, style.label]);
+        lr.height = 20;
+
+        const markCell = lr.getCell(1);
+        markCell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: style.bg } };
+        markCell.font      = { color: { argb: style.fg }, bold: true };
+        markCell.alignment = { horizontal: 'center', vertical: 'middle' };
+        markCell.border    = thinBorder('FF000000');
+
+        const descCell = lr.getCell(2);
+        descCell.alignment = { horizontal: 'left', vertical: 'middle' };
+        descCell.font      = { size: 11, color: { argb: 'FF334155' } };
+        descCell.border    = thinBorder('FF000000');
+        sheet.mergeCells(lr.number, 2, lr.number, Math.min(8, totalCols));
+      });
+
+      sheet.addRow([]);
+      const balNote = sheet.addRow([
+        'SL / CL / PL',
+        `Leave balance for ${year} — shown as "used / total". Remaining = total - used. `
+        + 'Counted in working days (weekends excluded). "—" means no allowance has been set. '
+        + 'LOP and HD-LOP are unpaid and have no balance.',
+      ]);
+      balNote.height = 32;
+      const bnMark = balNote.getCell(1);
+      bnMark.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEDE9FE' } };
+      bnMark.font      = { color: { argb: 'FF5B21B6' }, bold: true };
+      bnMark.alignment = { horizontal: 'center', vertical: 'middle' };
+      bnMark.border    = thinBorder('FF000000');
+
+      const bnDesc = balNote.getCell(2);
+      bnDesc.alignment = { horizontal: 'left', vertical: 'middle', wrapText: true };
+      bnDesc.font      = { size: 10, color: { argb: 'FF334155' } };
+      bnDesc.border    = thinBorder('FF000000');
+      sheet.mergeCells(balNote.number, 2, balNote.number, Math.min(10, totalCols));
+
+      sheet.getColumn(1).width = 8;
+      sheet.getColumn(2).width = 26;
+      for (let i = 3; i <= dates.length + 2; i++) sheet.getColumn(i).width = 8;
+      for (let i = 0; i < BALANCE_TYPES.length; i++) {
+        sheet.getColumn(FIRST_BAL_COL + i).width = 11;
       }
-    });
 
-    // ── Legend (styled as a bordered table, matching the grid above) ──
-    sheet.addRow([]); // spacer
+      sheet.views = [{ state: 'frozen', xSplit: 2, ySplit: 2 }];
 
-    // Legend header row (indigo, like the main header)
-    const legHeader = sheet.addRow(['Marker', 'Meaning']);
-    [1, 2].forEach((c) => {
-      const cell = legHeader.getCell(c);
-      cell.font      = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
-      cell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4F46E5' } }; // indigo-600
-      cell.alignment = { horizontal: c === 1 ? 'center' : 'left', vertical: 'middle' };
-      cell.border    = thinBorder('FF000000');
-    });
-    sheet.mergeCells(legHeader.number, 2, legHeader.number, Math.min(8, totalCols));
-    legHeader.height = 22;
-
-    const legendItems = [
-      { mark: 'P',      kind: 'P'          },
-      { mark: 'HD-LOP', kind: 'HD_LEAVE'   },
-      { mark: 'HD-LOP', kind: 'HD_WORK'    },
-      { mark: 'LOP',    kind: 'LOP_LEAVE'  },
-      { mark: 'LOP',    kind: 'LOP_SHORT'  },
-      { mark: 'LOP',    kind: 'LOP_ABSENT' },
-      { mark: 'H',      kind: 'H'          },
-    ];
-
-    legendItems.forEach((item) => {
-      const style = KIND_STYLE[item.kind];
-      if (!style) return; // safety: skip any kind missing from KIND_STYLE
-
-      const lr = sheet.addRow([item.mark, style.label]);
-      lr.height = 20;
-
-      const markCell = lr.getCell(1);
-      markCell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: style.bg } };
-      markCell.font      = { color: { argb: style.fg }, bold: true };
-      markCell.alignment = { horizontal: 'center', vertical: 'middle' };
-      markCell.border    = thinBorder('FF000000');
-
-      const descCell = lr.getCell(2);
-      descCell.alignment = { horizontal: 'left', vertical: 'middle' };
-      descCell.font      = { size: 11, color: { argb: 'FF334155' } };
-      descCell.border    = thinBorder('FF000000');
-      sheet.mergeCells(lr.number, 2, lr.number, Math.min(8, totalCols));
-    });
-
-    // Column widths
-    sheet.getColumn(1).width = 8;
-    sheet.getColumn(2).width = 26;
-    for (let i = 3; i <= dayNumbers.length + 2; i++) {
-      sheet.getColumn(i).width = 8; // was 6 — HD-LOP needs the extra room
+      const buffer = await workbook.xlsx.writeBuffer();
+      const blob   = new Blob([buffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const url  = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href  = url;
+      link.setAttribute('download', `monthly_summary_${fetchMonth}${selectedUser ? `_emp${selectedUser}` : ''}.xlsx`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      toast.success('Monthly summary Excel downloaded!');
+    } catch {
+      toast.error('Failed to generate monthly summary.');
     }
-
-    // Freeze title row + header row + first two columns (serial number + employee email)
-    sheet.views = [{ state: 'frozen', xSplit: 2, ySplit: 2 }];
-
-    const buffer = await workbook.xlsx.writeBuffer();
-    const blob   = new Blob([buffer], {
-      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    });
-    const url  = window.URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href  = url;
-    link.setAttribute('download', `monthly_summary_${fetchMonth}${selectedUser ? `_emp${selectedUser}` : ''}.xlsx`);
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    window.URL.revokeObjectURL(url);
-    toast.success('Monthly summary Excel downloaded!');
   };
 
   const attendanceByKey = groupByDay(records);
   const datesToShow     = getDatesToEnumerate(fetchMonth, selectedDate);
   const grouped         = buildReportRows(attendanceByKey, lopLeaves, employees, datesToShow, selectedUser);
 
-  // Summary stats
-  const totalDays      = grouped.length;
-  const totalEmployees = [...new Set(grouped.map((g) => g.userId))].length;
-  const totalMs        = grouped.reduce((acc, g) => acc + g.totalMs, 0);
-  const activeDays     = grouped.filter((g) => g.hasActive).length;
+  // ── UI ONLY: the on-screen table shows sign-ins only. ──
+  // The exports above still use `grouped` (every employee × every day), so
+  // nothing about the Excel / CSV output changes.
+  const signedIn = grouped.filter((g) => g.attendance === 'P');
+
+  // Summary stats — based on the sign-ins actually shown in the table
+  const totalDays      = signedIn.length;
+  const totalEmployees = [...new Set(signedIn.map((g) => g.userId))].length;
+  const totalMs        = signedIn.reduce((acc, g) => acc + g.totalMs, 0);
+  const activeDays     = signedIn.filter((g) => g.hasActive).length;
 
   const monthLabel = new Date(month + '-01').toLocaleDateString('en-US', {
     month: 'long', year: 'numeric',
@@ -579,7 +640,7 @@ const AllReports = () => {
             <div>
               <h1 className="text-2xl font-bold">Attendance Reports</h1>
               <p className="text-slate-400 text-sm">
-                Daily records — {rangeLabel}
+                Sign-in records — {rangeLabel}
                 {selectedUser && employees.find(e => e.id === parseInt(selectedUser))
                   ? ` — ${employees.find(e => e.id === parseInt(selectedUser)).name}`
                   : ''}
@@ -595,7 +656,7 @@ const AllReports = () => {
               <FileSpreadsheet className="w-4 h-4" />
               Monthly Summary
             </button>
-            <button onClick={exportCSV} disabled={grouped.length === 0}
+            <button onClick={exportCSV} disabled={signedIn.length === 0}
               className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500
                          disabled:opacity-50 disabled:cursor-not-allowed
                          text-white px-4 py-2.5 rounded-xl text-sm font-semibold
@@ -649,10 +710,10 @@ const AllReports = () => {
         {/* Summary Cards */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
           {[
-            { label: 'Total Records',    value: totalDays,      color: 'text-white'       },
-            { label: 'Employees',        value: totalEmployees, color: 'text-indigo-400'  },
-            { label: 'Total Hours',      value: formatMs(totalMs), color: 'text-emerald-400' },
-            { label: 'Still Active',     value: activeDays,     color: 'text-amber-400'   },
+            { label: 'Sign-in Records', value: totalDays,         color: 'text-white'       },
+            { label: 'Employees',       value: totalEmployees,    color: 'text-indigo-400'  },
+            { label: 'Total Hours',     value: formatMs(totalMs), color: 'text-emerald-400' },
+            { label: 'Still Active',    value: activeDays,        color: 'text-amber-400'   },
           ].map(({ label, value, color }) => (
             <div key={label} className="bg-slate-900 border border-slate-800 rounded-xl p-5">
               <p className="text-slate-400 text-xs mb-1">{label}</p>
@@ -661,16 +722,16 @@ const AllReports = () => {
           ))}
         </div>
 
-        {/* Table */}
+        {/* Table — sign-ins only */}
         <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
-          <div className="px-6 py-4 border-b border-slate-800 flex items-center gap-2">
+          <div className="px-6 py-4 border-b border-slate-800 flex items-center gap-2 flex-wrap">
             <TrendingUp className="w-5 h-5 text-slate-400" />
             <h2 className="font-semibold">Daily Records</h2>
             <span className="text-xs bg-slate-700 text-slate-300 px-2 py-0.5 rounded-full">
-              {grouped.length} records
+              {signedIn.length} records
             </span>
             <span className="text-xs text-slate-500 ml-2">
-              1 row per employee per day
+              only employees who signed in
             </span>
           </div>
 
@@ -678,10 +739,10 @@ const AllReports = () => {
             <div className="flex justify-center py-12">
               <div className="w-8 h-8 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin" />
             </div>
-          ) : grouped.length === 0 ? (
+          ) : signedIn.length === 0 ? (
             <div className="text-center py-12 text-slate-500">
               <Calendar className="w-10 h-10 mx-auto mb-2 opacity-30" />
-              <p>No records found for {rangeLabel}.</p>
+              <p>No sign-ins found for {rangeLabel}.</p>
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -689,14 +750,8 @@ const AllReports = () => {
                 <thead>
                   <tr className="border-b border-slate-800 text-left">
                     {[
-                      'Employee',
-                      'Date',
-                      'First Clock In',
-                      'Last Clock Out',
-                      'Attendance',
-                      'Total Duration',
-                      'Location',
-                      'Status',
+                      'Employee', 'Date', 'First Clock In', 'Last Clock Out',
+                      'Attendance', 'Total Duration', 'Location', 'Status',
                     ].map((h) => (
                       <th key={h}
                         className="px-5 py-3 text-xs font-medium text-slate-400 uppercase tracking-wider whitespace-nowrap">
@@ -706,11 +761,9 @@ const AllReports = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800">
-                  {grouped.map((g) => (
-                    <tr key={g.key}
-                      className="hover:bg-slate-800/50 transition-colors">
+                  {signedIn.map((g) => (
+                    <tr key={g.key} className="hover:bg-slate-800/50 transition-colors">
 
-                      {/* Employee */}
                       <td className="px-5 py-4">
                         <div className="flex items-center gap-3">
                           <div className="w-8 h-8 bg-indigo-600 rounded-full flex items-center justify-center text-sm font-bold flex-shrink-0">
@@ -723,70 +776,47 @@ const AllReports = () => {
                         </div>
                       </td>
 
-                      {/* Date */}
                       <td className="px-5 py-4 text-sm text-slate-300 whitespace-nowrap">
                         {formatDate(g.date)}
                       </td>
 
-                      {/* First Clock In */}
                       <td className="px-5 py-4 text-sm font-medium text-emerald-400 whitespace-nowrap">
-                        {g.attendance === 'P'
-                          ? <>🟢 {formatTime(g.firstClockIn)}</>
-                          : <span className="text-slate-600">—</span>}
+                        🟢 {formatTime(g.firstClockIn)}
                       </td>
 
-                      {/* Last Clock Out */}
                       <td className="px-5 py-4 text-sm text-slate-300 whitespace-nowrap">
-                        {g.attendance !== 'P'
-                          ? <span className="text-slate-600">—</span>
-                          : g.hasActive
-                            ? <span className="text-amber-400">🟡 Active</span>
-                            : g.lastClockOut
-                              ? `🔴 ${formatTime(g.lastClockOut)}`
-                              : '—'}
+                        {g.hasActive
+                          ? <span className="text-amber-400">🟡 Active</span>
+                          : g.lastClockOut
+                            ? `🔴 ${formatTime(g.lastClockOut)}`
+                            : '—'}
                       </td>
 
-                      {/* Attendance */}
                       <td className="px-5 py-4">
-                        {g.attendance === 'P' ? (
-                          <span className="inline-flex items-center gap-1 text-xs bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-1 rounded-full font-medium">
-                            P
-                          </span>
-                        ) : g.attendance === 'LOP' ? (
-                          <span className="inline-flex items-center gap-1 text-xs bg-red-500/20 text-red-400 border border-red-500/30 px-2.5 py-1 rounded-full font-medium">
-                            LOP
-                          </span>
-                        ) : (
-                          <span className="text-slate-600 text-xs">—</span>
-                        )}
-                      </td>
-
-                      {/* Total Duration */}
-                      <td className="px-5 py-4">
-                        <span className={`text-sm font-bold
-                          ${g.totalMs > 0 ? 'text-white' : 'text-slate-500'}`}>
-                          {g.attendance !== 'P'
-                            ? <span className="text-slate-600">—</span>
-                            : g.hasActive && g.totalMs === 0
-                              ? <span className="text-amber-400 text-xs font-normal">In progress</span>
-                              : formatMs(g.totalMs, true)}
+                        <span className="inline-flex items-center gap-1 text-xs bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-1 rounded-full font-medium">
+                          P
                         </span>
                       </td>
 
-                      {/* Location */}
+                      <td className="px-5 py-4">
+                        <span className={`text-sm font-bold
+                          ${g.totalMs > 0 ? 'text-white' : 'text-slate-500'}`}>
+                          {g.hasActive && g.totalMs === 0
+                            ? <span className="text-amber-400 text-xs font-normal">In progress</span>
+                            : formatMs(g.totalMs, true)}
+                        </span>
+                      </td>
+
                       <td className="px-5 py-4 text-sm text-slate-400 max-w-xs">
-                        {g.attendance === 'P' && g.firstLocation
+                        {g.firstLocation
                           ? <span className="truncate block max-w-48" title={g.firstLocation}>
                               📍 {g.firstLocation}
                             </span>
                           : <span className="text-slate-600">—</span>}
                       </td>
 
-                      {/* Status */}
                       <td className="px-5 py-4">
-                        {g.attendance !== 'P' ? (
-                          <span className="text-slate-600 text-xs">—</span>
-                        ) : g.hasActive ? (
+                        {g.hasActive ? (
                           <span className="inline-flex items-center gap-1 text-xs bg-amber-500/20 text-amber-400 border border-amber-500/30 px-2.5 py-1 rounded-full">
                             Active
                           </span>

@@ -6,10 +6,14 @@ import { useNavigate } from 'react-router-dom';
 import toast, { Toaster } from 'react-hot-toast';
 import {
   ShieldCheck, LogOut, ArrowLeft, CheckCircle,
-  XCircle, AlertCircle, Calendar, X, ChevronDown, ChevronUp,
+  XCircle, AlertCircle, Calendar, X, ChevronDown, ChevronUp, Scale,
+  AlertTriangle,
 } from 'lucide-react';
 
 const API = import.meta.env.VITE_API_URL;
+
+// Types that have a balance. LOP / HD_LOP are unpaid → unlimited.
+const BALANCE_TYPES = ['SL', 'CL', 'PL'];
 
 const StatusBadge = ({ status }) => {
   const styles = {
@@ -63,25 +67,34 @@ const ExpandableCell = ({ text, cellKey, expandedCell, setExpandedCell }) => {
           : 'hover:bg-slate-800/40 p-1'
         }`}
     >
-      {/* Text — truncated or full */}
       <p className={`text-sm text-slate-200 leading-relaxed transition-all duration-200
-        ${isExpanded
-          ? 'whitespace-normal break-words'   // full text, wide ✅
-          : 'truncate max-w-[130px]'          // 1 line clipped ✅
-        }`}
-      >
+        ${isExpanded ? 'whitespace-normal break-words' : 'truncate max-w-[130px]'}`}>
         {text}
       </p>
-
-      {/* Chevron icon — shows expand/collapse state */}
       <span className="flex items-center gap-1 mt-1.5 text-indigo-400 text-xs font-medium">
         {isExpanded
           ? <><ChevronUp   className="w-3 h-3" /> minimize</>
-          : <><ChevronDown className="w-3 h-3" /> expand</>
-        }
+          : <><ChevronDown className="w-3 h-3" /> expand</>}
       </span>
     </div>
   );
+};
+
+// ── Working days between two dates, inclusive, skipping Sat/Sun ──
+// Mirrors the backend rule so the modal shows the same number that
+// will actually be deducted from the balance.
+const workingDays = (from, to) => {
+  const start = new Date(from); start.setHours(0, 0, 0, 0);
+  const end   = new Date(to);   end.setHours(0, 0, 0, 0);
+  if (end < start) return 0;
+  let count = 0;
+  const cur = new Date(start);
+  while (cur <= end) {
+    const d = cur.getDay();
+    if (d !== 0 && d !== 6) count++;
+    cur.setDate(cur.getDate() + 1);
+  }
+  return count;
 };
 
 const AdminLeaves = () => {
@@ -101,6 +114,10 @@ const AdminLeaves = () => {
   const [approveType,  setApproveType]  = useState('');
   const [submitting,   setSubmitting]   = useState(false);
   const [expandedCell, setExpandedCell] = useState(null);
+
+  // Balance of the employee whose leave is being approved
+  const [balance,        setBalance]        = useState(null);
+  const [balanceLoading, setBalanceLoading] = useState(false);
 
   const fetchLeaves = useCallback(async () => {
     setLoading(true);
@@ -122,9 +139,30 @@ const AdminLeaves = () => {
 
   useEffect(() => { fetchLeaves(); }, [fetchLeaves]);
 
-  const openApproveModal = (leave) => {
+  // Open the approve modal AND fetch that employee's balance for the leave's year
+  const openApproveModal = async (leave) => {
     setApproveModal(leave);
     setApproveType(leave.type);
+    setBalance(null);
+    setBalanceLoading(true);
+
+    try {
+      const year = new Date(leave.fromDate).getFullYear();
+      const { data } = await axios.get(
+        `${API}/leave-balances/user/${leave.user.id}`,
+        { params: { year } }
+      );
+      setBalance(data.balances);
+    } catch {
+      setBalance(null);   // silently fall back — approving still works
+    } finally {
+      setBalanceLoading(false);
+    }
+  };
+
+  const closeApprove = () => {
+    setApproveModal(null);
+    setBalance(null);
   };
 
   const handleApprove = async () => {
@@ -134,7 +172,7 @@ const AdminLeaves = () => {
         type: approveType,
       });
       toast.success(data.message);
-      setApproveModal(null);
+      closeApprove();
       fetchLeaves();
     } catch (err) {
       toast.error(err?.response?.data?.message || 'Failed to approve.');
@@ -168,6 +206,17 @@ const AdminLeaves = () => {
   const calcDays = (from, to) =>
     Math.ceil((new Date(to) - new Date(from)) / (1000 * 60 * 60 * 24)) + 1;
 
+  // ── What this approval will cost, and whether the balance covers it ──
+  const approveDays = approveModal
+    ? workingDays(approveModal.fromDate, approveModal.toDate)
+    : 0;
+
+  const selectedBal   = balance?.[approveType] || null;               // null for LOP/HD_LOP
+  const isBalanceType = BALANCE_TYPES.includes(approveType);
+  const allowanceSet  = selectedBal && selectedBal.allowed !== null;
+  const afterApproval = allowanceSet ? selectedBal.remaining - approveDays : null;
+  const insufficient  = afterApproval !== null && afterApproval < 0;
+
   return (
     <div className="min-h-screen bg-slate-950 text-white">
       <Toaster position="top-right" />
@@ -195,15 +244,24 @@ const AdminLeaves = () => {
       <main className="p-6 max-w-7xl mx-auto">
 
         {/* Header */}
-        <div className="flex items-center gap-3 mb-6">
-          <button onClick={() => navigate('/admin/dashboard')}
-            className="p-2 hover:bg-slate-800 rounded-lg transition-all text-slate-400 hover:text-white">
-            <ArrowLeft className="w-5 h-5" />
-          </button>
-          <div>
-            <h1 className="text-2xl font-bold">Leave Management</h1>
-            <p className="text-slate-400 text-sm">Review and manage employee leave requests</p>
+        <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
+          <div className="flex items-center gap-3">
+            <button onClick={() => navigate('/admin/dashboard')}
+              className="p-2 hover:bg-slate-800 rounded-lg transition-all text-slate-400 hover:text-white">
+              <ArrowLeft className="w-5 h-5" />
+            </button>
+            <div>
+              <h1 className="text-2xl font-bold">Leave Management</h1>
+              <p className="text-slate-400 text-sm">Review and manage employee leave requests</p>
+            </div>
           </div>
+
+          <button onClick={() => navigate('/admin/leave-balances')}
+            className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700
+                       text-white px-4 py-2.5 rounded-xl text-sm font-semibold
+                       transition-all border border-slate-700">
+            <Scale className="w-4 h-4" /> Leave Balances
+          </button>
         </div>
 
         {/* Stats */}
@@ -284,72 +342,78 @@ const AdminLeaves = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800">
-                  {leaves.map((leave) => (
-                    <tr key={leave.id} className="hover:bg-slate-800/50 transition-colors">
-
-                      {/* Employee */}
-                      <td className="px-5 py-4">
-                        <div className="flex items-center gap-3">
-                          <div className="w-8 h-8 bg-indigo-600 rounded-full flex items-center justify-center text-sm font-bold flex-shrink-0">
-                            {leave.user.name.charAt(0)}
+                  {leaves.map((leave) => {
+                    const wd = workingDays(leave.fromDate, leave.toDate);
+                    const cd = calcDays(leave.fromDate, leave.toDate);
+                    return (
+                      <tr key={leave.id} className="hover:bg-slate-800/50 transition-colors">
+                        <td className="px-5 py-4">
+                          <div className="flex items-center gap-3">
+                            <div className="w-8 h-8 bg-indigo-600 rounded-full flex items-center justify-center text-sm font-bold flex-shrink-0">
+                              {leave.user.name.charAt(0)}
+                            </div>
+                            <div>
+                              <p className="text-sm font-medium text-white">{leave.user.name}</p>
+                              <p className="text-xs text-slate-400">{leave.user.email}</p>
+                            </div>
                           </div>
-                          <div>
-                            <p className="text-sm font-medium text-white">{leave.user.name}</p>
-                            <p className="text-xs text-slate-400">{leave.user.email}</p>
-                          </div>
-                        </div>
-                      </td>
+                        </td>
 
-                      <td className="px-5 py-4"><TypeBadge type={leave.type} /></td>
-                      <td className="px-5 py-4 text-sm text-slate-300 whitespace-nowrap">{formatDate(leave.fromDate)}</td>
-                      <td className="px-5 py-4 text-sm text-slate-300 whitespace-nowrap">{formatDate(leave.toDate)}</td>
-                      <td className="px-5 py-4 text-sm font-semibold text-white">{calcDays(leave.fromDate, leave.toDate)}</td>
+                        <td className="px-5 py-4"><TypeBadge type={leave.type} /></td>
+                        <td className="px-5 py-4 text-sm text-slate-300 whitespace-nowrap">{formatDate(leave.fromDate)}</td>
+                        <td className="px-5 py-4 text-sm text-slate-300 whitespace-nowrap">{formatDate(leave.toDate)}</td>
 
-                      {/* Reason — click to expand ✅ */}
-                      <td className="px-5 py-4 min-w-[150px] max-w-[300px]">
-                        <ExpandableCell
-                          text={leave.reason}
-                          cellKey={`reason-${leave.id}`}
-                          expandedCell={expandedCell}
-                          setExpandedCell={setExpandedCell}
-                        />
-                      </td>
+                        {/* Days — calendar days, with working days beneath (what's deducted) */}
+                        <td className="px-5 py-4 whitespace-nowrap">
+                          <p className="text-sm font-semibold text-white">{cd}</p>
+                          {wd !== cd && (
+                            <p className="text-xs text-slate-500">{wd} working</p>
+                          )}
+                        </td>
 
-                      <td className="px-5 py-4"><StatusBadge status={leave.status} /></td>
+                        <td className="px-5 py-4 min-w-[150px] max-w-[300px]">
+                          <ExpandableCell
+                            text={leave.reason}
+                            cellKey={`reason-${leave.id}`}
+                            expandedCell={expandedCell}
+                            setExpandedCell={setExpandedCell}
+                          />
+                        </td>
 
-                      {/* Admin Remark — click to expand ✅ */}
-                      <td className="px-5 py-4 min-w-[150px] max-w-[300px]">
-                        <ExpandableCell
-                          text={leave.adminRemark || '—'}
-                          cellKey={`remark-${leave.id}`}
-                          expandedCell={expandedCell}
-                          setExpandedCell={setExpandedCell}
-                        />
-                      </td>
+                        <td className="px-5 py-4"><StatusBadge status={leave.status} /></td>
 
-                      {/* Actions */}
-                      <td className="px-5 py-4">
-                        {leave.status === 'PENDING' ? (
-                          <div className="flex items-center gap-2">
-                            <button onClick={() => openApproveModal(leave)}
-                              className="flex items-center gap-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500
-                                         text-white text-xs rounded-lg transition-all font-medium">
-                              <CheckCircle className="w-3 h-3" /> Approve
-                            </button>
-                            <button onClick={() => { setRejectModal(leave); setRejectRemark(''); }}
-                              className="flex items-center gap-1 px-3 py-1.5 bg-red-600 hover:bg-red-500
-                                         text-white text-xs rounded-lg transition-all font-medium">
-                              <XCircle className="w-3 h-3" /> Reject
-                            </button>
-                          </div>
-                        ) : (
-                          <span className="text-slate-500 text-xs">
-                            {leave.reviewer ? `by ${leave.reviewer.name}` : '—'}
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
+                        <td className="px-5 py-4 min-w-[150px] max-w-[300px]">
+                          <ExpandableCell
+                            text={leave.adminRemark || '—'}
+                            cellKey={`remark-${leave.id}`}
+                            expandedCell={expandedCell}
+                            setExpandedCell={setExpandedCell}
+                          />
+                        </td>
+
+                        <td className="px-5 py-4">
+                          {leave.status === 'PENDING' ? (
+                            <div className="flex items-center gap-2">
+                              <button onClick={() => openApproveModal(leave)}
+                                className="flex items-center gap-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500
+                                           text-white text-xs rounded-lg transition-all font-medium">
+                                <CheckCircle className="w-3 h-3" /> Approve
+                              </button>
+                              <button onClick={() => { setRejectModal(leave); setRejectRemark(''); }}
+                                className="flex items-center gap-1 px-3 py-1.5 bg-red-600 hover:bg-red-500
+                                           text-white text-xs rounded-lg transition-all font-medium">
+                                <XCircle className="w-3 h-3" /> Reject
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="text-slate-500 text-xs">
+                              {leave.reviewer ? `by ${leave.reviewer.name}` : '—'}
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -357,27 +421,104 @@ const AdminLeaves = () => {
         </div>
       </main>
 
-      {/* Approve Modal */}
+      {/* ══════════ Approve Modal — now shows the employee's balance ══════════ */}
       {approveModal && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-md shadow-2xl">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800 sticky top-0 bg-slate-900">
               <h3 className="font-semibold text-white">Approve Leave Request</h3>
-              <button onClick={() => setApproveModal(null)}
+              <button onClick={closeApprove}
                 className="text-slate-400 hover:text-white p-1 hover:bg-slate-800 rounded-lg transition-all">
                 <X className="w-5 h-5" />
               </button>
             </div>
+
             <div className="p-6 space-y-4">
+              {/* Who / how long */}
               <div className="p-4 bg-slate-800 rounded-xl">
                 <p className="text-sm text-slate-300">
-                  Approving <span className="text-white font-semibold">{approveModal.user.name}</span>'s leave request for&nbsp;
-                  <span className="text-white font-semibold">{calcDays(approveModal.fromDate, approveModal.toDate)} day(s)</span>
+                  Approving <span className="text-white font-semibold">{approveModal.user.name}</span>'s leave for&nbsp;
+                  <span className="text-white font-semibold">
+                    {calcDays(approveModal.fromDate, approveModal.toDate)} day(s)
+                  </span>
+                </p>
+                <p className="text-xs text-slate-400 mt-1">
+                  {formatDate(approveModal.fromDate)} → {formatDate(approveModal.toDate)}
+                  {' · '}
+                  <span className="text-slate-300 font-medium">
+                    {approveDays} working day{approveDays === 1 ? '' : 's'}
+                  </span>
+                  {' will be deducted'}
                 </p>
               </div>
+
+              {/* ── Leave balance for this employee ── */}
+              <div>
+                <div className="flex items-center gap-2 mb-2">
+                  <Scale className="w-4 h-4 text-slate-400" />
+                  <p className="text-sm font-medium text-slate-300">
+                    Leave balance — {new Date(approveModal.fromDate).getFullYear()}
+                  </p>
+                </div>
+
+                {balanceLoading ? (
+                  <div className="flex justify-center py-4">
+                    <div className="w-5 h-5 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+                  </div>
+                ) : !balance ? (
+                  <div className="p-3 bg-slate-800 rounded-xl">
+                    <p className="text-xs text-slate-500">Could not load balance.</p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-3 gap-2">
+                    {BALANCE_TYPES.map((t) => {
+                      const b        = balance[t];
+                      const notSet   = !b || b.allowed === null;
+                      const isActive = approveType === t;
+
+                      return (
+                        <div key={t}
+                          className={`rounded-xl p-3 text-center border transition-all
+                            ${isActive
+                              ? 'bg-indigo-500/10 border-indigo-500/50'
+                              : 'bg-slate-800 border-slate-700'}`}>
+                          <p className="text-xs text-slate-400 mb-1">{t}</p>
+                          {notSet ? (
+                            <>
+                              <p className="text-sm text-slate-600">not set</p>
+                              {b?.used > 0 && (
+                                <p className="text-[10px] text-amber-400 mt-0.5">{b.used} used</p>
+                              )}
+                            </>
+                          ) : (
+                            <>
+                              <p className={`text-xl font-bold ${
+                                b.remaining < 0 ? 'text-red-400'
+                                  : b.remaining <= 2 ? 'text-amber-400'
+                                  : 'text-emerald-400'
+                              }`}>
+                                {b.remaining}
+                              </p>
+                              <p className="text-[10px] text-slate-500">
+                                {b.used} / {b.allowed}
+                              </p>
+                            </>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                <p className="text-[11px] text-slate-500 mt-2">
+                  LOP and HD-LOP are unpaid — no balance limit.
+                </p>
+              </div>
+
+              {/* Leave type — admin can convert (e.g. no CL left → approve as LOP) */}
               <div>
                 <label className="block text-sm font-medium text-slate-300 mb-1.5">
-                  Leave Type
+                  Approve as
                 </label>
                 <select value={approveType} onChange={(e) => setApproveType(e.target.value)}
                   className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl
@@ -388,21 +529,76 @@ const AdminLeaves = () => {
                   <option value="HD_LOP">HD-LOP — Half Day LOP</option>
                   <option value="PL">PL — Privileged Leave</option>
                 </select>
+
                 {approveType !== approveModal.type && (
                   <p className="text-xs text-amber-400 mt-1.5">
                     Changing from {approveModal.type} to {approveType}
                   </p>
                 )}
               </div>
-              <div className="flex gap-3">
-                <button onClick={() => setApproveModal(null)}
+
+              {/* What happens to the balance if approved as the selected type */}
+              {isBalanceType && !balanceLoading && balance && (
+                <div className={`p-3 rounded-xl border text-sm flex gap-2.5
+                  ${insufficient
+                    ? 'bg-red-500/10 border-red-500/30'
+                    : allowanceSet
+                      ? 'bg-slate-800 border-slate-700'
+                      : 'bg-amber-500/10 border-amber-500/30'}`}>
+                  {insufficient
+                    ? <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
+                    : !allowanceSet
+                      ? <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
+                      : <CheckCircle className="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />}
+
+                  <div>
+                    {!allowanceSet ? (
+                      <p className="text-amber-300 text-xs">
+                        No {approveType} allowance is set for this employee — the balance won't be
+                        meaningful until an allowance is assigned on the Leave Balances page.
+                      </p>
+                    ) : insufficient ? (
+                      <>
+                        <p className="text-red-300 font-medium text-xs">
+                          Not enough {approveType} balance
+                        </p>
+                        <p className="text-slate-300 text-xs mt-0.5">
+                          {selectedBal.remaining} left, this leave needs {approveDays}.
+                          Approving anyway leaves them at <span className="text-red-300 font-semibold">{afterApproval}</span>.
+                          Consider approving as LOP instead.
+                        </p>
+                      </>
+                    ) : (
+                      <p className="text-slate-300 text-xs">
+                        After approval: <span className="text-white font-semibold">{afterApproval}</span> {approveType} remaining
+                        <span className="text-slate-500"> (was {selectedBal.remaining})</span>
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {!isBalanceType && (
+                <div className="p-3 bg-slate-800 border border-slate-700 rounded-xl">
+                  <p className="text-xs text-slate-400">
+                    {approveType} is unpaid — it does not use any leave balance.
+                  </p>
+                </div>
+              )}
+
+              <div className="flex gap-3 pt-1">
+                <button onClick={closeApprove}
                   className="flex-1 py-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-sm transition-all">
                   Cancel
                 </button>
                 <button onClick={handleApprove} disabled={submitting}
-                  className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50
-                             text-white rounded-xl text-sm font-semibold transition-all">
-                  {submitting ? 'Approving...' : 'Confirm Approve'}
+                  className={`flex-1 py-2.5 disabled:opacity-50 text-white rounded-xl text-sm font-semibold transition-all
+                    ${insufficient
+                      ? 'bg-amber-600 hover:bg-amber-500'
+                      : 'bg-emerald-600 hover:bg-emerald-500'}`}>
+                  {submitting
+                    ? 'Approving...'
+                    : insufficient ? 'Approve Anyway' : 'Confirm Approve'}
                 </button>
               </div>
             </div>
