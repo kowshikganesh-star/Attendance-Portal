@@ -7,13 +7,23 @@ import toast, { Toaster } from 'react-hot-toast';
 import {
   ShieldCheck, LogOut, ArrowLeft, CheckCircle,
   XCircle, AlertCircle, Calendar, X, ChevronDown, ChevronUp, Scale,
-  AlertTriangle,
+  AlertTriangle, Scissors,
 } from 'lucide-react';
 
 const API = import.meta.env.VITE_API_URL;
 
 // Types that have a balance. LOP / HD_LOP are unpaid → unlimited.
 const BALANCE_TYPES = ['SL', 'CL', 'PL'];
+
+const VALID_TYPES = ['SL', 'CL', 'LOP', 'HD_LOP', 'PL'];
+
+const TYPE_LABELS = {
+  SL: 'SL — Sick Leave',
+  CL: 'CL — Casual Leave',
+  LOP: 'LOP — Loss of Pay',
+  HD_LOP: 'HD-LOP — Half Day LOP',
+  PL: 'PL — Privileged Leave',
+};
 
 const StatusBadge = ({ status }) => {
   const styles = {
@@ -49,7 +59,6 @@ const TypeBadge = ({ type }) => {
   );
 };
 
-// ── Click to expand cell ──────────────────────────────────
 const ExpandableCell = ({ text, cellKey, expandedCell, setExpandedCell }) => {
   if (!text || text === '—') return <span className="text-slate-500 text-sm">—</span>;
 
@@ -80,9 +89,7 @@ const ExpandableCell = ({ text, cellKey, expandedCell, setExpandedCell }) => {
   );
 };
 
-// ── Working days between two dates, inclusive, skipping Sat/Sun ──
-// Mirrors the backend rule so the modal shows the same number that
-// will actually be deducted from the balance.
+// Working days between two dates, inclusive, skipping Sat/Sun.
 const workingDays = (from, to) => {
   const start = new Date(from); start.setHours(0, 0, 0, 0);
   const end   = new Date(to);   end.setHours(0, 0, 0, 0);
@@ -119,6 +126,10 @@ const AdminLeaves = () => {
   const [balance,        setBalance]        = useState(null);
   const [balanceLoading, setBalanceLoading] = useState(false);
 
+  // Split approval state
+  const [useSplit,      setUseSplit]      = useState(false);
+  const [customSplits,  setCustomSplits]  = useState(null); // null = use suggested
+
   const fetchLeaves = useCallback(async () => {
     setLoading(true);
     try {
@@ -139,12 +150,14 @@ const AdminLeaves = () => {
 
   useEffect(() => { fetchLeaves(); }, [fetchLeaves]);
 
-  // Open the approve modal AND fetch that employee's balance for the leave's year
+  // Open approve modal + fetch employee's balance for the leave year
   const openApproveModal = async (leave) => {
     setApproveModal(leave);
     setApproveType(leave.type);
     setBalance(null);
     setBalanceLoading(true);
+    setUseSplit(false);
+    setCustomSplits(null);
 
     try {
       const year = new Date(leave.fromDate).getFullYear();
@@ -154,7 +167,7 @@ const AdminLeaves = () => {
       );
       setBalance(data.balances);
     } catch {
-      setBalance(null);   // silently fall back — approving still works
+      setBalance(null);
     } finally {
       setBalanceLoading(false);
     }
@@ -163,14 +176,86 @@ const AdminLeaves = () => {
   const closeApprove = () => {
     setApproveModal(null);
     setBalance(null);
+    setUseSplit(false);
+    setCustomSplits(null);
   };
 
+  // Reset split state whenever approveType changes
+  useEffect(() => {
+    setUseSplit(false);
+    setCustomSplits(null);
+  }, [approveType]);
+
+  // ── Working days that will be deducted ──
+  const approveDays = approveModal
+    ? workingDays(approveModal.fromDate, approveModal.toDate)
+    : 0;
+
+  const selectedBal   = balance?.[approveType] || null;
+  const isBalanceType = BALANCE_TYPES.includes(approveType);
+  const allowanceSet  = selectedBal && selectedBal.allowed !== null;
+  const afterApproval = allowanceSet ? selectedBal.remaining - approveDays : null;
+  const insufficient  = afterApproval !== null && afterApproval < 0;
+
+  // ── Compute auto-suggested split ──────────────────────────────────────────
+  // Called when primary type doesn't have enough balance.
+  // Strategy: use as much of primary type as possible, overflow → best available
+  // balance type, fall back to LOP.
+  const computeSuggestedSplit = () => {
+    if (!balance || !approveModal || !insufficient) return null;
+
+    const primaryRemaining = Math.max(0, balance[approveType]?.remaining ?? 0);
+    if (primaryRemaining === 0) return null; // nothing to split from primary
+
+    const overflowDays = approveDays - primaryRemaining;
+
+    // Pick best fallback: prefer type with enough balance, else LOP
+    const fallbackType = (() => {
+      // Try other balance types first (exclude primary)
+      for (const t of BALANCE_TYPES) {
+        if (t === approveType) continue;
+        const rem = balance[t]?.remaining ?? 0;
+        if (rem >= overflowDays) return t;
+      }
+      // Partial coverage from another type
+      for (const t of BALANCE_TYPES) {
+        if (t === approveType) continue;
+        const rem = balance[t]?.remaining ?? 0;
+        if (rem > 0) return t;
+      }
+      return 'LOP';
+    })();
+
+    return [
+      { type: approveType, days: primaryRemaining },
+      { type: fallbackType, days: overflowDays },
+    ];
+  };
+
+  const suggestedSplit = computeSuggestedSplit();
+  // Active splits: custom if set, else suggested
+  const activeSplits = customSplits || suggestedSplit;
+
+  // Validate custom splits total matches approveDays
+  const splitTotalDays = activeSplits
+    ? activeSplits.reduce((s, c) => s + (parseInt(c.days) || 0), 0)
+    : 0;
+  const splitValid = splitTotalDays === approveDays;
+
+  // ── Handle approve submit ─────────────────────────────────────────────────
   const handleApprove = async () => {
+    if (useSplit && !splitValid) {
+      toast.error(`Split days (${splitTotalDays}) must total ${approveDays} working days.`);
+      return;
+    }
+
     setSubmitting(true);
     try {
-      const { data } = await axios.patch(`${API}/leaves/${approveModal.id}/approve`, {
-        type: approveType,
-      });
+      const payload = useSplit && activeSplits
+        ? { splits: activeSplits.map((s) => ({ type: s.type, days: parseInt(s.days) })) }
+        : { type: approveType };
+
+      const { data } = await axios.patch(`${API}/leaves/${approveModal.id}/approve`, payload);
       toast.success(data.message);
       closeApprove();
       fetchLeaves();
@@ -200,22 +285,47 @@ const AdminLeaves = () => {
     }
   };
 
+  // ── Custom split helpers ──────────────────────────────────────────────────
+  const initCustomSplits = () => {
+    setCustomSplits(
+      activeSplits
+        ? activeSplits.map((s) => ({ ...s }))
+        : [
+            { type: approveType, days: approveDays },
+            { type: 'LOP', days: 0 },
+          ]
+    );
+  };
+
+  const updateCustomSplitType = (idx, newType) => {
+    setCustomSplits((prev) => prev.map((s, i) => i === idx ? { ...s, type: newType } : s));
+  };
+
+  const updateCustomSplitDays = (idx, newDays) => {
+    setCustomSplits((prev) => prev.map((s, i) => i === idx ? { ...s, days: parseInt(newDays) || 0 } : s));
+  };
+
+  const addCustomSplitRow = () => {
+    setCustomSplits((prev) => [...prev, { type: 'LOP', days: 0 }]);
+  };
+
+  const removeCustomSplitRow = (idx) => {
+    setCustomSplits((prev) => prev.filter((_, i) => i !== idx));
+  };
+
   const formatDate = (d) =>
     new Date(d).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' });
 
   const calcDays = (from, to) =>
     Math.ceil((new Date(to) - new Date(from)) / (1000 * 60 * 60 * 24)) + 1;
 
-  // ── What this approval will cost, and whether the balance covers it ──
-  const approveDays = approveModal
-    ? workingDays(approveModal.fromDate, approveModal.toDate)
-    : 0;
-
-  const selectedBal   = balance?.[approveType] || null;               // null for LOP/HD_LOP
-  const isBalanceType = BALANCE_TYPES.includes(approveType);
-  const allowanceSet  = selectedBal && selectedBal.allowed !== null;
-  const afterApproval = allowanceSet ? selectedBal.remaining - approveDays : null;
-  const insufficient  = afterApproval !== null && afterApproval < 0;
+  // Balance after split for a given type/days pair
+  const balanceAfterSplit = (type, days) => {
+    if (!BALANCE_TYPES.includes(type)) return null;
+    const rem = balance?.[type]?.remaining;
+    if (rem === null || rem === undefined) return null;
+    return rem - days;
+  };
 
   return (
     <div className="min-h-screen bg-slate-950 text-white">
@@ -363,7 +473,6 @@ const AdminLeaves = () => {
                         <td className="px-5 py-4 text-sm text-slate-300 whitespace-nowrap">{formatDate(leave.fromDate)}</td>
                         <td className="px-5 py-4 text-sm text-slate-300 whitespace-nowrap">{formatDate(leave.toDate)}</td>
 
-                        {/* Days — calendar days, with working days beneath (what's deducted) */}
                         <td className="px-5 py-4 whitespace-nowrap">
                           <p className="text-sm font-semibold text-white">{cd}</p>
                           {wd !== cd && (
@@ -421,11 +530,15 @@ const AdminLeaves = () => {
         </div>
       </main>
 
-      {/* ══════════ Approve Modal — now shows the employee's balance ══════════ */}
+      {/* ══════════════════════════════════════════════════════════════
+          APPROVE MODAL — with split-leave support
+      ══════════════════════════════════════════════════════════════ */}
       {approveModal && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800 sticky top-0 bg-slate-900">
+
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800 sticky top-0 bg-slate-900 z-10">
               <h3 className="font-semibold text-white">Approve Leave Request</h3>
               <button onClick={closeApprove}
                 className="text-slate-400 hover:text-white p-1 hover:bg-slate-800 rounded-lg transition-all">
@@ -434,10 +547,12 @@ const AdminLeaves = () => {
             </div>
 
             <div className="p-6 space-y-4">
+
               {/* Who / how long */}
               <div className="p-4 bg-slate-800 rounded-xl">
                 <p className="text-sm text-slate-300">
-                  Approving <span className="text-white font-semibold">{approveModal.user.name}</span>'s leave for&nbsp;
+                  Approving{' '}
+                  <span className="text-white font-semibold">{approveModal.user.name}</span>'s leave for{' '}
                   <span className="text-white font-semibold">
                     {calcDays(approveModal.fromDate, approveModal.toDate)} day(s)
                   </span>
@@ -452,7 +567,7 @@ const AdminLeaves = () => {
                 </p>
               </div>
 
-              {/* ── Leave balance for this employee ── */}
+              {/* Leave balance cards */}
               <div>
                 <div className="flex items-center gap-2 mb-2">
                   <Scale className="w-4 h-4 text-slate-400" />
@@ -493,7 +608,7 @@ const AdminLeaves = () => {
                           ) : (
                             <>
                               <p className={`text-xl font-bold ${
-                                b.remaining < 0 ? 'text-red-400'
+                                b.remaining < 0    ? 'text-red-400'
                                   : b.remaining <= 2 ? 'text-amber-400'
                                   : 'text-emerald-400'
                               }`}>
@@ -515,92 +630,255 @@ const AdminLeaves = () => {
                 </p>
               </div>
 
-              {/* Leave type — admin can convert (e.g. no CL left → approve as LOP) */}
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1.5">
-                  Approve as
-                </label>
-                <select value={approveType} onChange={(e) => setApproveType(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl
-                             text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">
-                  <option value="SL">SL — Sick Leave</option>
-                  <option value="CL">CL — Casual Leave</option>
-                  <option value="LOP">LOP — Loss of Pay</option>
-                  <option value="HD_LOP">HD-LOP — Half Day LOP</option>
-                  <option value="PL">PL — Privileged Leave</option>
-                </select>
+              {/* Approve as — single type selector (hidden when split mode active) */}
+              {!useSplit && (
+                <div>
+                  <label className="block text-sm font-medium text-slate-300 mb-1.5">
+                    Approve as
+                  </label>
+                  <select value={approveType} onChange={(e) => setApproveType(e.target.value)}
+                    className="w-full px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl
+                               text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                    {VALID_TYPES.map((t) => (
+                      <option key={t} value={t}>{TYPE_LABELS[t]}</option>
+                    ))}
+                  </select>
 
-                {approveType !== approveModal.type && (
-                  <p className="text-xs text-amber-400 mt-1.5">
-                    Changing from {approveModal.type} to {approveType}
-                  </p>
-                )}
-              </div>
+                  {approveType !== approveModal.type && (
+                    <p className="text-xs text-amber-400 mt-1.5">
+                      Changing from {approveModal.type} to {approveType}
+                    </p>
+                  )}
+                </div>
+              )}
 
-              {/* What happens to the balance if approved as the selected type */}
-              {isBalanceType && !balanceLoading && balance && (
-                <div className={`p-3 rounded-xl border text-sm flex gap-2.5
-                  ${insufficient
-                    ? 'bg-red-500/10 border-red-500/30'
-                    : allowanceSet
-                      ? 'bg-slate-800 border-slate-700'
-                      : 'bg-amber-500/10 border-amber-500/30'}`}>
-                  {insufficient
-                    ? <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
-                    : !allowanceSet
-                      ? <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
-                      : <CheckCircle className="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />}
-
-                  <div>
-                    {!allowanceSet ? (
-                      <p className="text-amber-300 text-xs">
-                        No {approveType} allowance is set for this employee — the balance won't be
-                        meaningful until an allowance is assigned on the Leave Balances page.
-                      </p>
-                    ) : insufficient ? (
-                      <>
-                        <p className="text-red-300 font-medium text-xs">
-                          Not enough {approveType} balance
-                        </p>
-                        <p className="text-slate-300 text-xs mt-0.5">
-                          {selectedBal.remaining} left, this leave needs {approveDays}.
-                          Approving anyway leaves them at <span className="text-red-300 font-semibold">{afterApproval}</span>.
-                          Consider approving as LOP instead.
-                        </p>
-                      </>
-                    ) : (
+              {/* ── Balance impact / split UI ── */}
+              {!balanceLoading && balance && (
+                <>
+                  {/* SUFFICIENT balance — simple green banner */}
+                  {isBalanceType && !insufficient && allowanceSet && !useSplit && (
+                    <div className="p-3 bg-slate-800 border border-slate-700 rounded-xl flex gap-2.5">
+                      <CheckCircle className="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />
                       <p className="text-slate-300 text-xs">
-                        After approval: <span className="text-white font-semibold">{afterApproval}</span> {approveType} remaining
+                        After approval:{' '}
+                        <span className="text-white font-semibold">{afterApproval}</span>{' '}
+                        {approveType} remaining
                         <span className="text-slate-500"> (was {selectedBal.remaining})</span>
                       </p>
-                    )}
-                  </div>
-                </div>
+                    </div>
+                  )}
+
+                  {/* Allowance not set warning */}
+                  {isBalanceType && !allowanceSet && !useSplit && (
+                    <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl flex gap-2.5">
+                      <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
+                      <p className="text-amber-300 text-xs">
+                        No {approveType} allowance set for this employee — balance won't be
+                        meaningful until assigned on the Leave Balances page.
+                      </p>
+                    </div>
+                  )}
+
+                  {/* INSUFFICIENT balance — split suggestion */}
+                  {isBalanceType && insufficient && !useSplit && (
+                    <div className="rounded-xl border border-red-500/30 bg-red-500/10 overflow-hidden">
+                      <div className="p-3 flex gap-2.5">
+                        <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-red-300 font-medium text-xs">
+                            Not enough {approveType} balance
+                          </p>
+                          <p className="text-slate-300 text-xs mt-0.5">
+                            {selectedBal.remaining} left, this leave needs {approveDays}.
+                            Approving as-is leaves them at{' '}
+                            <span className="text-red-300 font-semibold">{afterApproval}</span>.
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Split suggestion preview */}
+                      {suggestedSplit && (
+                        <div className="px-3 pb-3 space-y-1.5">
+                          <p className="text-xs text-slate-400 font-medium mb-2">
+                            Suggested split:
+                          </p>
+                          {suggestedSplit.map((s, i) => {
+                            const after = balanceAfterSplit(s.type, s.days);
+                            return (
+                              <div key={i}
+                                className="flex items-center justify-between bg-slate-800 rounded-lg px-3 py-2">
+                                <TypeBadge type={s.type} />
+                                <span className="text-white text-xs font-semibold">
+                                  {s.days} day{s.days !== 1 ? 's' : ''}
+                                </span>
+                                {after !== null ? (
+                                  <span className={`text-xs ${after < 0 ? 'text-red-400' : 'text-slate-400'}`}>
+                                    bal: {balance[s.type]?.remaining} → {after}
+                                  </span>
+                                ) : (
+                                  <span className="text-xs text-slate-500">unpaid</span>
+                                )}
+                              </div>
+                            );
+                          })}
+
+                          {/* Split / Force toggle */}
+                          <div className="flex gap-2 mt-3">
+                            <button
+                              onClick={() => { setUseSplit(true); setCustomSplits(null); }}
+                              className="flex-1 flex items-center justify-center gap-1.5 py-2
+                                         bg-emerald-600 hover:bg-emerald-500 text-white text-xs
+                                         rounded-lg font-medium transition-all">
+                              <Scissors className="w-3 h-3" /> Use split
+                            </button>
+                            <button
+                              onClick={() => setUseSplit(false)}
+                              className="flex-1 py-2 bg-amber-600 hover:bg-amber-500
+                                         text-white text-xs rounded-lg font-medium transition-all">
+                              Force as {approveType} (−{Math.abs(afterApproval)})
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* ── SPLIT MODE UI ── */}
+                  {useSplit && (
+                    <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 overflow-hidden">
+                      <div className="px-4 pt-3 pb-2 flex items-center justify-between border-b border-emerald-500/20">
+                        <div className="flex items-center gap-2">
+                          <Scissors className="w-4 h-4 text-emerald-400" />
+                          <span className="text-sm font-medium text-emerald-300">Split approval</span>
+                        </div>
+                        <button
+                          onClick={() => { setUseSplit(false); setCustomSplits(null); }}
+                          className="text-xs text-slate-400 hover:text-white transition-all">
+                          cancel split
+                        </button>
+                      </div>
+
+                      <div className="p-4 space-y-2">
+                        {/* Split rows */}
+                        {(customSplits || suggestedSplit || []).map((s, i) => {
+                          const after = balanceAfterSplit(s.type, parseInt(s.days) || 0);
+                          return (
+                            <div key={i} className="flex items-center gap-2">
+                              {/* Type select */}
+                              <select
+                                value={s.type}
+                                onChange={(e) => {
+                                  if (!customSplits) initCustomSplits();
+                                  updateCustomSplitType(i, e.target.value);
+                                }}
+                                className="flex-1 px-2 py-1.5 bg-slate-800 border border-slate-700
+                                           rounded-lg text-white text-xs focus:outline-none focus:ring-1
+                                           focus:ring-emerald-500">
+                                {VALID_TYPES.map((t) => (
+                                  <option key={t} value={t}>{t}</option>
+                                ))}
+                              </select>
+
+                              {/* Days input */}
+                              <input
+                                type="number"
+                                min={1}
+                                max={approveDays}
+                                value={s.days}
+                                onChange={(e) => {
+                                  if (!customSplits) initCustomSplits();
+                                  updateCustomSplitDays(i, e.target.value);
+                                }}
+                                className="w-16 px-2 py-1.5 bg-slate-800 border border-slate-700
+                                           rounded-lg text-white text-xs text-center
+                                           focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                              />
+                              <span className="text-xs text-slate-500 w-6">days</span>
+
+                              {/* Balance after */}
+                              {after !== null ? (
+                                <span className={`text-xs w-20 text-right ${after < 0 ? 'text-red-400' : 'text-slate-400'}`}>
+                                  → {after} left
+                                </span>
+                              ) : (
+                                <span className="text-xs w-20 text-right text-slate-500">unpaid</span>
+                              )}
+
+                              {/* Remove row (only if >2 rows) */}
+                              {(customSplits || suggestedSplit || []).length > 2 && (
+                                <button
+                                  onClick={() => {
+                                    if (!customSplits) initCustomSplits();
+                                    removeCustomSplitRow(i);
+                                  }}
+                                  className="text-slate-500 hover:text-red-400 transition-all p-1">
+                                  <X className="w-3 h-3" />
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })}
+
+                        {/* Add row */}
+                        <button
+                          onClick={() => { if (!customSplits) initCustomSplits(); addCustomSplitRow(); }}
+                          className="text-xs text-slate-400 hover:text-white transition-all mt-1">
+                          + add row
+                        </button>
+
+                        {/* Total validation */}
+                        <div className={`flex items-center justify-between pt-2 border-t ${
+                          splitValid ? 'border-emerald-500/20' : 'border-red-500/20'
+                        }`}>
+                          <span className="text-xs text-slate-400">Total days</span>
+                          <span className={`text-xs font-semibold ${
+                            splitValid ? 'text-emerald-400' : 'text-red-400'
+                          }`}>
+                            {splitTotalDays} / {approveDays}
+                            {!splitValid && ' — must match'}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* LOP info */}
+                  {!isBalanceType && !useSplit && (
+                    <div className="p-3 bg-slate-800 border border-slate-700 rounded-xl">
+                      <p className="text-xs text-slate-400">
+                        {approveType} is unpaid — it does not use any leave balance.
+                      </p>
+                    </div>
+                  )}
+                </>
               )}
 
-              {!isBalanceType && (
-                <div className="p-3 bg-slate-800 border border-slate-700 rounded-xl">
-                  <p className="text-xs text-slate-400">
-                    {approveType} is unpaid — it does not use any leave balance.
-                  </p>
-                </div>
-              )}
-
+              {/* Action buttons */}
               <div className="flex gap-3 pt-1">
                 <button onClick={closeApprove}
                   className="flex-1 py-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-sm transition-all">
                   Cancel
                 </button>
-                <button onClick={handleApprove} disabled={submitting}
+                <button
+                  onClick={handleApprove}
+                  disabled={submitting || (useSplit && !splitValid)}
                   className={`flex-1 py-2.5 disabled:opacity-50 text-white rounded-xl text-sm font-semibold transition-all
-                    ${insufficient
-                      ? 'bg-amber-600 hover:bg-amber-500'
-                      : 'bg-emerald-600 hover:bg-emerald-500'}`}>
+                    ${useSplit
+                      ? 'bg-emerald-600 hover:bg-emerald-500'
+                      : insufficient
+                        ? 'bg-amber-600 hover:bg-amber-500'
+                        : 'bg-emerald-600 hover:bg-emerald-500'
+                    }`}>
                   {submitting
                     ? 'Approving...'
-                    : insufficient ? 'Approve Anyway' : 'Confirm Approve'}
+                    : useSplit
+                      ? `Approve Split (${splitTotalDays}d)`
+                      : insufficient
+                        ? 'Approve Anyway'
+                        : 'Confirm Approve'}
                 </button>
               </div>
+
             </div>
           </div>
         </div>
@@ -620,9 +898,12 @@ const AdminLeaves = () => {
             <div className="p-6 space-y-4">
               <div className="p-4 bg-slate-800 rounded-xl">
                 <p className="text-sm text-slate-300">
-                  Rejecting <span className="text-white font-semibold">{rejectModal.user.name}</span>'s&nbsp;
-                  <span className="text-orange-400">{rejectModal.type}</span> leave request for&nbsp;
-                  <span className="text-white font-semibold">{calcDays(rejectModal.fromDate, rejectModal.toDate)} day(s)</span>
+                  Rejecting{' '}
+                  <span className="text-white font-semibold">{rejectModal.user.name}</span>'s{' '}
+                  <span className="text-orange-400">{rejectModal.type}</span> leave request for{' '}
+                  <span className="text-white font-semibold">
+                    {calcDays(rejectModal.fromDate, rejectModal.toDate)} day(s)
+                  </span>
                 </p>
               </div>
               <div>
